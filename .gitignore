@@ -16,3 +16,6 @@ qde.db
 __pycache__/
 *.pyc
 .env
+*.bak*
+kalan*
+unutler.txt
