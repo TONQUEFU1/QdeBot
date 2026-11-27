@@ -1,0 +1,4559 @@
+
+===== DOSYA: engines/__init__.py =====
+"""
+QDE V1 - engines package
+
+Business logic layer: filtering, scoring, confidence, and research
+persistence. Depends on models/, indicators/ (registry only), and
+storage/ (abstractions only - never a concrete DB driver directly).
+"""
+
+from engines.hard_filter import HardFilterEngine
+from engines.scoring import ScoringEngine
+from engines.uniqueness import UniquenessProvider, BatchUniquenessProvider, HistoricalUniquenessProvider
+from engines.confidence import ConfidenceEngine
+from engines.research import ResearchEngine
+
+__all__ = [
+    "HardFilterEngine",
+    "ScoringEngine",
+    "UniquenessProvider",
+    "BatchUniquenessProvider",
+    "HistoricalUniquenessProvider",
+    "ConfidenceEngine",
+    "ResearchEngine",
+]
+
+
+===== DOSYA: engines/confidence.py =====
+"""
+QDE V1 - engines/confidence.py
+
+Confidence Engine (Document 04). Answers "how much should we trust
+this score?" - not "how good is this setup?" (Document 04 SS1).
+
+Family-agreement design note:
+    Setup.feature_scores / Setup.fingerprint are keyed by feature name
+    only (Document 09 SS9 schema: feature_scores_json is a flat dict) -
+    Setup does not carry each Feature's FeatureFamily. Rather than
+    widen the Setup schema, this engine keeps a small, explicit
+    name -> FeatureFamily map mirroring each indicator's own `family`
+    class attribute (Document 04 SS4 family list). This keeps Setup
+    lean and storage-friendly while still enabling the family-agreement
+    matrix described in Document 04 SS4-SS6.
+
+Uniqueness is delegated to an injected UniquenessProvider
+(engines.uniqueness) - the frozen Document 09 SS11 decision.
+
+Expected-move / expected-duration heuristics are V1 placeholders
+(Document 04 SS8, SS10 both state these should ultimately come from
+backtest statistics, which the Research Engine has not yet
+accumulated). They will be replaced by ResearchEngine.get_statistics()
+lookups in a later pass without changing this engine's public API.
+
+Dependency level: 2 (depends on models.setup, models.result,
+models.feature, engines.uniqueness, storage.logger).
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+from engines.uniqueness import UniquenessProvider
+from models.feature import FeatureFamily
+from models.result import ExpectedMove, RISK_GRADES, Result
+from models.setup import Setup
+from storage.logger import QDELogger
+from market_regime import REGIME_BULL, REGIME_BEAR, REGIME_HIGH_VOLATILITY
+
+# Mirrors each indicator's `family` attribute (indicators/*.py).
+_FAMILY_MAP: dict[str, FeatureFamily] = {
+    "trend": FeatureFamily.TREND,
+    "momentum": FeatureFamily.MOMENTUM,
+    "volatility": FeatureFamily.STRUCTURE,
+    "volume": FeatureFamily.PARTICIPATION,
+    "relative_strength": FeatureFamily.MARKET,
+    "open_interest": FeatureFamily.PARTICIPATION,
+    "funding": FeatureFamily.PARTICIPATION,
+}
+
+# Document 04 SS12 "Market Regime Adjustment" - applied as a small,
+# additive percentage-point shift to the agreement-based confidence,
+# using setup.market_regime (populated by main.QDEPipeline from
+# market_regime.classify_regime(), computed once per scan from BTC's
+# own indicators - see market_regime.py). Values match Document 04
+# SS12's own worked example (Bull +5%, Bear -15%) rather than being
+# separately tuned/backtested - an honest, documented starting point,
+# not a claim of optimization.
+_REGIME_CONFIDENCE_ADJUSTMENT = {
+    REGIME_BULL: 5.0,
+    REGIME_BEAR: -15.0,
+    REGIME_HIGH_VOLATILITY: 0.0,  # affects expected_move instead, see _expected_move
+}
+
+
+class ConfidenceEngine:
+    """Evaluates a Setup's reliability and produces the final Result."""
+
+    def __init__(self, uniqueness_provider: UniquenessProvider) -> None:
+        self.uniqueness_provider = uniqueness_provider
+        self.logger = QDELogger.get(__name__)
+
+    def evaluate(self, setup: Setup, batch_context: list[Setup]) -> Result:
+        family_groups: dict[str, list[str]] = defaultdict(list)
+        for feature_name, status in setup.fingerprint.items():
+            family = _FAMILY_MAP.get(feature_name, FeatureFamily.STRUCTURE).value
+            family_groups[family].append(status)
+
+        contradictions: list[str] = []
+        agreeing_families = 0
+        for family, statuses in family_groups.items():
+            has_positive = "positive" in statuses
+            has_negative = "negative" in statuses
+            if has_positive and has_negative:
+                contradictions.append(f"conflicting_signals_within_{family}")
+            else:
+                agreeing_families += 1
+
+        total_families = len(family_groups) or 1
+        agreement_ratio = agreeing_families / total_families
+        base_confidence = agreement_ratio * 100.0 - len(contradictions) * 10.0
+        # Blend with raw_score so confidence is not fully independent of
+        # setup quality, while agreement remains the dominant driver.
+        confidence = max(0.0, min(100.0, base_confidence)) * 0.8 + setup.raw_score * 0.2
+
+        # Document 04 SS12 regime adjustment (see module-level
+        # _REGIME_CONFIDENCE_ADJUSTMENT). Applied after the base
+        # calculation, then re-clamped to [0, 100].
+        regime_shift = _REGIME_CONFIDENCE_ADJUSTMENT.get(setup.market_regime, 0.0)
+        confidence = round(max(0.0, min(100.0, confidence + regime_shift)), 2)
+
+        uniqueness = self.uniqueness_provider.calculate(setup, batch_context)
+        risk_grade = self._risk_grade(setup.raw_score, confidence)
+        expected_move = self._expected_move(setup.raw_score, confidence, setup.market_regime)
+        expected_duration = self._expected_duration(confidence)
+
+        result = Result(
+            setup=setup,
+            confidence=confidence,
+            risk_grade=risk_grade,
+            uniqueness=uniqueness,
+            expected_move=expected_move,
+            expected_duration=expected_duration,
+            contradictions=contradictions,
+        )
+        self.logger.debug(
+            f"Confidence calculation: {setup.symbol or '(unassigned)'} "
+            f"confidence={confidence} risk_grade={risk_grade} "
+            f"contradictions={contradictions}"
+        )
+        return result
+
+    @staticmethod
+    def _risk_grade(raw_score: float, confidence: float) -> str:
+        combined = (raw_score + confidence) / 2
+        if combined >= 90:
+            return RISK_GRADES[0]  # "A+"
+        if combined >= 80:
+            return RISK_GRADES[1]  # "A"
+        if combined >= 65:
+            return RISK_GRADES[2]  # "B"
+        if combined >= 50:
+            return RISK_GRADES[3]  # "C"
+        return RISK_GRADES[4]  # "D"
+
+    @staticmethod
+    def _expected_move(raw_score: float, confidence: float, market_regime: str) -> ExpectedMove:
+        """V1 heuristic placeholder (see module docstring). Document 04
+        SS12: "High Volatility: Expected Move increases, Expected Risk
+        also increases" - modeled here as a multiplicative bump on the
+        probabilities, since higher realized volatility mechanically
+        makes any given percentage move more likely to occur (whether
+        favorable or adverse) within the same time window.
+        """
+        factor = (raw_score / 100.0) * (confidence / 100.0)
+        regime_multiplier = 1.15 if market_regime == REGIME_HIGH_VOLATILITY else 1.0
+        probabilities = {
+            "10_percent": round(min(1.0, (0.50 + factor * 0.50) * regime_multiplier), 2),
+            "20_percent": round(min(1.0, (0.30 + factor * 0.40) * regime_multiplier), 2),
+            "30_percent": round(min(1.0, (0.15 + factor * 0.30) * regime_multiplier), 2),
+        }
+        return ExpectedMove(probabilities)
+
+    @staticmethod
+    def _expected_duration(confidence: float) -> str:
+        """V1 heuristic placeholder (see module docstring)."""
+        if confidence >= 85:
+            return "4-12h"
+        if confidence >= 65:
+            return "8-24h"
+        return "24-72h"
+
+
+===== DOSYA: engines/hard_filter.py =====
+"""
+QDE V1 - engines/hard_filter.py
+
+Hard Filter Engine (Document 02 SS15). Rejects invalid setups before
+scoring. Rule 10 (API failure -> skip symbol) is handled upstream by
+data.collector/main.py, since it occurs before a MarketData object
+even exists.
+
+V1.1 fix note (Document 10 diagnostic): Binance Futures' 24hr ticker
+endpoint (what ccxt's fetch_ticker maps to for USDM futures) does not
+return bid/ask fields, so market_data.spread() was always None for
+every symbol - Rule 7 was therefore rejecting 100% of scanned symbols
+regardless of actual quality. Rule 7 now only rejects when a spread
+value IS available and exceeds the configured threshold; unavailable
+spread is logged, not treated as a rejection. A proper fix (bulk
+bookTicker fetch in data/exchange.py) is tracked separately and does
+not require any change to this engine's interface.
+
+Dependency level: 2 (depends on models.market_data, storage.logger).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from models.market_data import MarketData
+from storage.logger import QDELogger
+
+
+class HardFilterEngine:
+    """Applies Document 02 SS15 Rules 1-9 sequentially. Rule 10 (API
+    failure) is out of scope here - it never produces a MarketData to
+    evaluate in the first place.
+    """
+
+    def __init__(self, filters: dict[str, Any]) -> None:
+        self.min_quote_volume = filters.get("min_quote_volume", 0.0)
+        self.max_spread = filters.get("max_spread", 1.0)
+        self.min_liquidity_score = filters.get("min_liquidity_score", 0.0)
+        self.required_candles = filters.get("required_candles", {})
+        self.logger = QDELogger.get(__name__)
+
+    def evaluate(self, market_data: MarketData) -> tuple[bool, list[str]]:
+        """Returns (passed, reasons). `reasons` is empty when passed."""
+        reasons: list[str] = []
+
+        # Rule 3: missing candle history
+        required = self.required_candles or {tf: 1 for tf in market_data.timeframes}
+        for tf, minimum in required.items():
+            tf_data = market_data.get_timeframe(tf)
+            if tf_data is None or not tf_data.is_sufficient(minimum):
+                reasons.append(f"missing_or_insufficient_candles:{tf}")
+
+        # Rule 4: missing open interest
+        if not market_data.has_open_interest():
+            reasons.append("missing_open_interest")
+
+        # Rule 5: missing funding data
+        if not market_data.has_funding():
+            reasons.append("missing_funding")
+
+        # Rule 6: daily quote volume below threshold
+        quote_volume = market_data.quote_volume()
+        if quote_volume is None:
+            reasons.append("missing_quote_volume")
+        elif quote_volume < self.min_quote_volume:
+            reasons.append(f"quote_volume_below_threshold:{quote_volume}")
+
+        # Rule 7: spread above threshold. Spread is only checked when a
+        # value is actually available - unavailability is a data-source
+        # limitation, not a quality signal, and must not reject every
+        # symbol (see module docstring).
+        spread = market_data.spread()
+        if spread is not None and spread > self.max_spread:
+            reasons.append(f"spread_above_threshold:{spread}")
+        elif spread is None:
+            self.logger.debug(f"{market_data.symbol}: spread unavailable from data source (not rejected)")
+
+        # Rule 9: corrupted data (NaN/null/missing values in candles)
+        for tf, tf_data in market_data.timeframes.items():
+            if tf_data.candles and not all(c.is_valid() for c in tf_data.candles):
+                reasons.append(f"corrupted_candle_data:{tf}")
+
+        passed = len(reasons) == 0
+        if not passed:
+            self.logger.debug(f"Hard filter rejection: {market_data.symbol} -> {reasons}")
+
+        return passed, reasons
+
+    @staticmethod
+    def explain(reasons: list[str]) -> list[str]:
+        """Map internal rejection codes to short, human-readable category
+        labels for diagnostic display (e.g. main.py's --show-rejections).
+
+        Note: Hard Filter only checks data-availability/quality gates
+        (Document 02 SS15) - it does not evaluate Trend, Momentum, or
+        ATR. Those are Scoring Engine indicators (Document 03) and only
+        run *after* a symbol passes the Hard Filter, so they can never
+        appear as a Hard Filter rejection reason.
+        """
+        labels: list[str] = []
+        for reason in reasons:
+            if reason.startswith("missing_or_insufficient_candles"):
+                tf = reason.split(":", 1)[1] if ":" in reason else "?"
+                labels.append(f"Candle History ({tf})")
+            elif reason == "missing_open_interest":
+                labels.append("Open Interest")
+            elif reason == "missing_funding":
+                labels.append("Funding")
+            elif reason == "missing_quote_volume" or reason.startswith("quote_volume_below_threshold"):
+                labels.append("Volume (Liquidity)")
+            elif reason.startswith("spread_above_threshold"):
+                labels.append("Spread")
+            elif reason.startswith("corrupted_candle_data"):
+                tf = reason.split(":", 1)[1] if ":" in reason else "?"
+                labels.append(f"Corrupted Data ({tf})")
+            else:
+                labels.append(reason)
+        return labels
+
+
+===== DOSYA: engines/research.py =====
+"""
+QDE V1 - engines/research.py
+
+Research Engine (Document 05). Collects evidence and preserves
+knowledge - it does not execute trades, score setups, or calculate
+indicators (Document 05 SS19).
+
+Persistence goes exclusively through the injected SetupRepository
+abstraction (storage.repository), never a concrete database driver -
+the frozen Repository-pattern decision (Document 09 SS11 addendum).
+
+V1 scope note: true MFE/MAE (Document 05 SS7-SS8) require continuous
+post-signal price tracking over multiple horizons, which is a
+scheduling concern outside this engine's synchronous scan pipeline
+(Document 05 SS6: "revisited automatically"). This engine exposes
+`record_performance` as the write path such a scheduler will call, and
+`compute_simple_return` as a placeholder single-point estimator, so the
+public API will not need to change once the scheduler exists.
+
+Dependency level: 2 (depends on models.setup, models.result,
+storage.repository, storage.logger).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from models.result import Result
+from storage.logger import QDELogger
+from storage.repository import SetupRepository
+
+
+class ResearchEngine:
+    """Records every Setup/Result and exposes historical statistics.
+
+    Per Document 05 SS3: no setup is ever discarded, regardless of
+    whether it passed the Hard Filter or scored well.
+    """
+
+    def __init__(self, repository: SetupRepository) -> None:
+        self.repository = repository
+        self.logger = QDELogger.get(__name__)
+
+    def record(self, result: Result, price_at_scan: float | None = None, config_version: str | None = None) -> None:
+        """Persist a freshly produced Result. Always called, pass or
+        fail (Document 05 SS3).
+
+        `price_at_scan` (V1 Final Audit revision - "Data Collection
+        Readiness"): forwarded to the repository so every scanned
+        symbol - not just Top 15 signals or --audit-capture runs - has
+        a price recorded at the moment it was scored. See
+        storage.repository.SetupRepository.insert_setup's docstring
+        for why this matters.
+
+        `config_version` (Deep Audit patch item #9): a deterministic
+        identifier of the config/weights.json content active when this
+        setup was scored - forwarded as-is, never guessed here.
+        """
+        self.repository.insert_setup(result, price_at_scan=price_at_scan, config_version=config_version)
+        self.logger.info(
+            f"Research: recorded {result.symbol} "
+            f"score={result.score} confidence={result.confidence} "
+            f"passed={result.setup.passed}"
+        )
+
+    def record_performance(
+        self,
+        setup_id: str,
+        horizon: str,
+        price_at_horizon: float,
+        mfe: float,
+        mae: float,
+    ) -> None:
+        """Write path for a future-performance revisit
+        (Document 05 SS6). Intended to be called by a scheduler that
+        tracks price action after the signal was generated.
+        """
+        self.repository.update_performance(setup_id, horizon, price_at_horizon, mfe, mae)
+        self.logger.debug(
+            f"Research: performance recorded setup_id={setup_id} horizon={horizon} "
+            f"mfe={mfe} mae={mae}"
+        )
+
+    @staticmethod
+    def compute_simple_return(entry_price: float, price_at_horizon: float) -> float:
+        """Single-point return estimate used as a stand-in for true
+        MFE/MAE until continuous price tracking is implemented
+        (see module docstring).
+        """
+        if not entry_price:
+            return 0.0
+        return round((price_at_horizon - entry_price) / entry_price, 4)
+
+    def get_statistics(
+        self,
+        fingerprint: dict[str, str] | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate statistics (Document 05 SS11), optionally scoped
+        to a specific setup fingerprint family.
+        """
+        if fingerprint:
+            matches = self.repository.get_setups_by_fingerprint(fingerprint)
+            return {"count": len(matches), "matches": matches}
+        return self.repository.get_statistics(filters)
+
+    def get_recent_setups(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Used by uniqueness providers that graduate from batch-only to
+        historical comparison (Document 09 SS11 addendum).
+        """
+        return self.repository.get_recent_setups(limit)
+
+    def start_scan_run(self, run_id: str, started_at: str) -> None:
+        self.repository.start_scan_run(run_id, started_at)
+
+    def finish_scan_run(self, run_id: str, summary: dict[str, Any]) -> None:
+        self.repository.finish_scan_run(run_id, summary)
+
+
+===== DOSYA: engines/scoring.py =====
+"""
+QDE V1 - engines/scoring.py
+
+Scoring Engine (Document 03). Aggregates weighted Feature scores into
+a Setup with a 0-100 raw_score. Never generates buy/sell signals -
+only evaluates setup quality (Document 03 SS1, SS17).
+
+Indicator plugins are consumed via IndicatorRegistry - this engine
+never imports a concrete indicator module by name (Document 09 SS11
+addendum, frozen decision).
+
+V1 simplification note: `market_regime` is not yet derived from a
+dedicated regime-detection feature (Document 03 SS3.J describes this
+as its own category); it is accepted as an optional parameter,
+defaulting to "unknown", pending a future MarketRegimeDetector. This
+does not require any change to ScoringEngine's public signature later.
+
+Dependency level: 3 (depends on indicators.registry, models.feature,
+models.setup, storage.logger).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from indicators.registry import IndicatorRegistry
+from models.feature import Feature
+from models.setup import Setup
+from storage.logger import QDELogger
+
+
+class ScoringEngine:
+    """Turns a list of Feature objects into a scored Setup.
+
+    Weights come from config/weights.json (Document 09 SS8); any
+    feature without an explicit weight defaults to 1.0 so new
+    indicators work immediately without a config change
+    (Document 06 SS13: extensibility).
+    """
+
+    _SCORE_FLOOR = 0.0
+    _SCORE_CEIL = 100.0
+    _BASELINE = 50.0  # neutral starting point before feature contributions
+
+    def __init__(self, registry: IndicatorRegistry, weights: dict[str, float]) -> None:
+        self.registry = registry
+        self.weights = weights
+        self.logger = QDELogger.get(__name__)
+
+    def score(self, features: list[Feature], market_regime: str = "unknown") -> Setup:
+        """Aggregate `features` (typically produced by every registered
+        indicator running against one symbol's MarketData) into a Setup.
+
+        `symbol` and `passed` are intentionally left for the caller to
+        set afterward (main.QDEPipeline._process_one), since scoring
+        operates purely on Feature values with no knowledge of the
+        symbol string or the Hard Filter's verdict.
+        """
+        feature_scores: dict[str, float] = {}
+        penalties: list[str] = []
+        fingerprint: dict[str, str] = {}
+        weighted_total = 0.0
+
+        for feature in features:
+            weight = self.weights.get(feature.name, 1.0)
+            weighted = feature.score * weight
+            feature_scores[feature.name] = round(weighted, 2)
+            weighted_total += weighted
+            fingerprint[feature.name] = feature.status.value
+
+            if feature.score < 0:
+                penalties.append(f"{feature.name}:{round(feature.score, 2)}")
+
+        raw_score = max(
+            self._SCORE_FLOOR, min(self._SCORE_CEIL, self._BASELINE + weighted_total)
+        )
+
+        setup = Setup(
+            symbol="",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            market_regime=market_regime,
+            raw_score=round(raw_score, 2),
+            feature_scores=feature_scores,
+            penalties=penalties,
+            fingerprint=fingerprint,
+            passed=False,
+        )
+        self.logger.debug(
+            f"Score calculation: raw_score={setup.raw_score} penalties={len(penalties)}"
+        )
+        return setup
+
+    def explain(self, setup: Setup) -> dict[str, Any]:
+        """Explainability helper (Document 03 SS14): break down which
+        categories contributed positively/negatively to the score.
+        """
+        return {
+            "total_score": setup.raw_score,
+            "breakdown": dict(setup.feature_scores),
+            "penalties": list(setup.penalties),
+            "top_contributors": setup.top_contributing_features(),
+        }
+
+
+===== DOSYA: engines/uniqueness.py =====
+"""
+QDE V1 - engines/uniqueness.py
+
+Uniqueness scoring abstraction (Document 04 SS13-SS14, Document 09 SS11
+addendum - mandatory frozen decision). Measures how rare a setup's
+fingerprint/score is, not how good it is (Document 04 SS14).
+
+ConfidenceEngine depends on the UniquenessProvider interface only, via
+constructor injection, so V1's batch-only implementation can later be
+replaced by a historical-database implementation without changing
+ConfidenceEngine's public API:
+
+    UniquenessProvider (ABC)
+            ^
+            |
+    BatchUniquenessProvider        (V1 - implemented, current scan batch)
+    HistoricalUniquenessProvider     (V2 - stub, will query
+                                       storage.repository.SetupRepository
+                                       .get_recent_setups() /
+                                       get_statistics())
+
+Dependency level: 1 (depends only on models.setup).
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+from models.setup import Setup
+
+
+class UniquenessProvider(ABC):
+    """Abstract uniqueness calculator. `context` is the comparison
+    population against which rarity is measured - its meaning depends
+    on the concrete implementation (current batch, full history, etc.).
+    """
+
+    @abstractmethod
+    def calculate(self, setup: Setup, context: list[Setup]) -> float:
+        """Return a uniqueness score in [0, 100]. Higher = rarer."""
+        raise NotImplementedError
+
+
+class BatchUniquenessProvider(UniquenessProvider):
+    """V1 implementation: uniqueness relative to the current scan batch
+    only (Document 09 SS11 addendum). Combines fingerprint rarity with
+    raw_score percentile rank within the batch.
+
+    Example (Document 04 SS13): out of 500 scanned coins, only 3 share
+    a similar fingerprint and score profile -> those 3 receive
+    uniqueness 95+.
+    """
+
+    _NEUTRAL_DEFAULT = 50.0
+
+    def calculate(self, setup: Setup, context: list[Setup]) -> float:
+        if not context:
+            return self._NEUTRAL_DEFAULT
+
+        matching = [s for s in context if s.fingerprint == setup.fingerprint]
+        fingerprint_rarity = 1.0 - (len(matching) / len(context))
+
+        scores = sorted(s.raw_score for s in context)
+        rank = sum(1 for s in scores if s <= setup.raw_score)
+        score_percentile = rank / len(scores)
+
+        # Rarity of structure matters more than raw score percentile
+        # for the Uniqueness concept (Document 04 SS14: "rare does not
+        # always mean good").
+        uniqueness = (fingerprint_rarity * 0.7 + score_percentile * 0.3) * 100.0
+        return max(0.0, min(100.0, round(uniqueness, 2)))
+
+
+class HistoricalUniquenessProvider(UniquenessProvider):
+    """V2 stub: will compute uniqueness against the full historical
+    setup database (via storage.repository.SetupRepository) instead of
+    just the current batch. Not implemented in V1 - present only to
+    document the frozen extension point (Document 09 SS11 addendum).
+    Swapping BatchUniquenessProvider for this class in main.py requires
+    no change to ConfidenceEngine's public API.
+    """
+
+    def __init__(self, repository: "SetupRepository") -> None:  # noqa: F821
+        self.repository = repository
+
+    def calculate(self, setup: Setup, context: list[Setup]) -> float:
+        raise NotImplementedError(
+            "HistoricalUniquenessProvider is a V2 extension point, not yet implemented."
+        )
+
+
+===== DOSYA: indicators/__init__.py =====
+"""
+QDE V1 - indicators package
+
+Every indicator is an isolated plugin (Document 06 SS6). Indicators
+never import each other and never talk to the exchange, cache, or
+storage directly - they only transform MarketData -> Feature.
+
+Concrete indicators self-register via @register_indicator
+(indicators.registry) when their module is imported by
+IndicatorRegistry.discover().
+"""
+
+from indicators.base import BaseIndicator
+from indicators.registry import IndicatorRegistry, register_indicator
+
+__all__ = ["BaseIndicator", "IndicatorRegistry", "register_indicator"]
+
+
+===== DOSYA: indicators/base.py =====
+"""
+QDE V1 - indicators/base.py
+
+Plugin contract for every indicator (Document 06 SS6).
+
+An indicator:
+    - Receives the unified MarketData object.
+    - Calculates exactly one feature.
+    - Returns a structured Feature.
+    - Never modifies global state, never calls the exchange or cache
+      directly, never talks to another indicator.
+
+Dependency level: 1 (depends on models.market_data, models.feature).
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+from models.feature import Feature, FeatureFamily
+from models.market_data import MarketData
+
+
+class BaseIndicator(ABC):
+    """Base class every concrete indicator must subclass.
+
+    Class attributes `name` and `family` must be overridden - they are
+    used by the Scoring Engine (weights lookup) and the Confidence
+    Engine (family-agreement matrix, Document 04 SS4) respectively.
+    """
+
+    name: str = ""
+    family: FeatureFamily = FeatureFamily.STRUCTURE
+
+    @abstractmethod
+    def calculate(self, market_data: MarketData) -> Feature:
+        """Compute this indicator's Feature for the given symbol.
+
+        Must never raise for merely missing/insufficient data - return
+        a neutral/unavailable Feature instead (Document 03 SS13:
+        missing feature -> ignored, confidence reduced, not crash).
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
+        """Shared normalization helper (Document 03 SS12)."""
+        return max(lo, min(hi, value))
+
+    def _unavailable(self, reason: str) -> Feature:
+        """Standard 'missing data' Feature every subclass can return
+        instead of crashing.
+        """
+        from models.feature import FeatureStatus
+
+        return Feature(
+            name=self.name,
+            value=0.0,
+            score=0.0,
+            status=FeatureStatus.NEUTRAL,
+            family=self.family,
+            metadata={"reason": reason, "available": False},
+        )
+
+
+===== DOSYA: indicators/funding.py =====
+"""
+QDE V1 - indicators/funding.py
+
+Funding indicator (Document 03 SS3.H). Used as a positioning filter -
+never dominates the score, only adjusts confidence/quality
+(Document 03 SS3.H: "Funding should never dominate the score").
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_HEALTHY_THRESHOLD = 0.0001   # |rate| at or below this = healthy/neutral positioning
+_CROWDED_THRESHOLD = 0.0005   # |rate| above this = overcrowded positioning
+
+
+@register_indicator
+class FundingIndicator(BaseIndicator):
+    name = "funding"
+    family = FeatureFamily.PARTICIPATION
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        rate = market_data.funding.get("rate")
+        if rate is None:
+            return self._unavailable("funding_rate_missing")
+
+        abs_rate = abs(rate)
+
+        if abs_rate <= _HEALTHY_THRESHOLD:
+            score, status = 8.0, FeatureStatus.POSITIVE
+        elif abs_rate <= _CROWDED_THRESHOLD:
+            score, status = 2.0, FeatureStatus.NEUTRAL
+        else:
+            # Deliberately capped low magnitude - funding is a soft
+            # positioning signal, not a dominant score driver.
+            score, status = -10.0, FeatureStatus.NEGATIVE
+
+        basis_points = rate * 10_000
+        return Feature(
+            name=self.name,
+            value=self._clamp(50.0 + basis_points, lo=0.0, hi=100.0),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "rate": rate,
+                "basis_points": basis_points,
+                "crowded_long": rate > _CROWDED_THRESHOLD,
+                "crowded_short": rate < -_CROWDED_THRESHOLD,
+            },
+        )
+
+
+===== DOSYA: indicators/momentum.py =====
+"""
+QDE V1 - indicators/momentum.py
+
+Momentum Quality indicator (Document 03 SS3.B). Evaluates whether
+momentum is starting rather than ending, via RSI on the 15m timeframe
+(Document 02 SS7: momentum uses 15m).
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_TIMEFRAME = "15m"
+_RSI_PERIOD = 14
+
+# Healthy RSI range: momentum is beginning, not already exhausted.
+_HEALTHY_LOW, _HEALTHY_HIGH = 45.0, 65.0
+_OVEREXTENDED = 75.0
+_WEAK = 30.0
+
+
+def _rsi(values: list[float], period: int = 14) -> float | None:
+    if len(values) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, len(values)):
+        change = values[i] - values[i - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+@register_indicator
+class MomentumIndicator(BaseIndicator):
+    name = "momentum"
+    family = FeatureFamily.MOMENTUM
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_TIMEFRAME)
+        if tf is None:
+            return self._unavailable("timeframe_missing")
+
+        closes = tf.closes()
+        rsi = _rsi(closes, _RSI_PERIOD)
+        if rsi is None:
+            return self._unavailable("insufficient_candle_history")
+
+        if _HEALTHY_LOW <= rsi <= _HEALTHY_HIGH:
+            score, status = 15.0, FeatureStatus.POSITIVE
+        elif rsi >= _OVEREXTENDED:
+            score, status = -12.0, FeatureStatus.NEGATIVE
+        elif rsi <= _WEAK:
+            score, status = -8.0, FeatureStatus.NEGATIVE
+        else:
+            # Transitional zone: mild positive/negative lean toward the
+            # healthy band without full credit.
+            distance = min(abs(rsi - _HEALTHY_LOW), abs(rsi - _HEALTHY_HIGH))
+            score = max(0.0, 8.0 - distance * 0.5)
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(rsi),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={"timeframe": tf.timeframe, "rsi": rsi},
+        )
+
+
+===== DOSYA: indicators/open_interest.py =====
+"""
+QDE V1 - indicators/open_interest.py
+
+Open Interest indicator (Document 03 SS3.G). Measures futures
+participation.
+
+V1 data-availability note:
+    Document 03 SS3.G describes OI trend states (increasing / stable /
+    explosive growth / collapse), which require a historical OI series.
+    MarketData carries only the current OI snapshot (Document 02 SS4)
+    - historical OI tracking is a Research Engine / database concern
+    (Document 05 SS4, SS17) that indicators intentionally cannot query
+    (indicators must not depend on storage - Document 06 SS3 dependency
+    rules). For V1, this indicator instead computes OI notional value
+    (open interest amount x mark price) relative to 24h quote volume,
+    a legitimate single-snapshot participation-depth proxy. True
+    OI-trend scoring (increasing/collapsing) is a tracked V2 item once
+    OI history is persisted per symbol.
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_HIGH_INTENSITY = 0.15   # OI notional / 24h quote volume
+_LOW_INTENSITY = 0.02
+
+
+@register_indicator
+class OpenInterestIndicator(BaseIndicator):
+    name = "open_interest"
+    family = FeatureFamily.PARTICIPATION
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        oi_amount = market_data.open_interest.get("value")
+        quote_volume = market_data.quote_volume()
+        mark_price = market_data.mark_price.get("mark_price") or market_data.ticker.get("last")
+
+        if oi_amount is None or not quote_volume or not mark_price:
+            return self._unavailable("oi_or_volume_or_price_missing")
+
+        oi_notional = oi_amount * mark_price
+        intensity = oi_notional / quote_volume
+
+        if intensity >= _HIGH_INTENSITY:
+            score, status = 12.0, FeatureStatus.POSITIVE
+        elif intensity <= _LOW_INTENSITY:
+            score, status = -6.0, FeatureStatus.NEGATIVE
+        else:
+            score = self._clamp(
+                (intensity - _LOW_INTENSITY) / (_HIGH_INTENSITY - _LOW_INTENSITY) * 12.0,
+                lo=-6.0,
+                hi=12.0,
+            )
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(intensity * 500.0),  # scaled into a 0-100-ish range
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "oi_amount": oi_amount,
+                "oi_notional": oi_notional,
+                "quote_volume": quote_volume,
+                "intensity": intensity,
+                "reason": "snapshot_only_v1_no_history_yet",
+            },
+        )
+
+
+===== DOSYA: indicators/registry.py =====
+"""
+QDE V1 - indicators/registry.py
+
+Indicator plugin registry (Document 09 SS11 addendum, mandatory frozen
+decision). ScoringEngine must never import a concrete indicator module
+by name - it only calls IndicatorRegistry.get_all().
+
+Adding a new indicator requires only:
+    1. Create the new indicator module in indicators/.
+    2. Decorate its class with @register_indicator.
+    3. Add a weight for it in config/weights.json.
+No other engine requires modification (Document 06 SS13).
+
+Dependency level: 2 (depends on indicators.base; discover() dynamically
+imports sibling indicator modules at call time to avoid import cycles
+with indicators/__init__.py).
+"""
+
+from __future__ import annotations
+
+import importlib
+import pkgutil
+from typing import Type
+
+from indicators.base import BaseIndicator
+
+# Module-level registry populated by the @register_indicator decorator
+# as each indicator module is imported.
+_REGISTRY: dict[str, Type[BaseIndicator]] = {}
+
+_NON_INDICATOR_MODULES = {"base", "registry", "__init__"}
+
+
+def register_indicator(cls: Type[BaseIndicator]) -> Type[BaseIndicator]:
+    """Class decorator. Registers `cls` under its `name` attribute.
+
+    Example:
+        @register_indicator
+        class TrendIndicator(BaseIndicator):
+            name = "trend"
+            family = FeatureFamily.TREND
+            def calculate(self, market_data): ...
+    """
+    if not cls.name:
+        raise ValueError(f"{cls.__name__} must define a non-empty 'name' attribute")
+    if cls.name in _REGISTRY and _REGISTRY[cls.name] is not cls:
+        raise ValueError(f"Duplicate indicator name registered: '{cls.name}'")
+    _REGISTRY[cls.name] = cls
+    return cls
+
+
+class IndicatorRegistry:
+    """Holds one instantiated indicator per registered class.
+
+    ScoringEngine consumes `get_all()` and never knows the concrete
+    indicator class names.
+    """
+
+    def __init__(self) -> None:
+        self._instances: list[BaseIndicator] = []
+
+    def register(self, indicator: BaseIndicator) -> None:
+        self._instances.append(indicator)
+
+    def get_all(self) -> list[BaseIndicator]:
+        return list(self._instances)
+
+    def get_by_name(self, name: str) -> BaseIndicator | None:
+        for indicator in self._instances:
+            if indicator.name == name:
+                return indicator
+        return None
+
+    def names(self) -> list[str]:
+        return [i.name for i in self._instances]
+
+    @classmethod
+    def discover(cls) -> "IndicatorRegistry":
+        """Import every module in the indicators package so that every
+        @register_indicator decorator runs, then build a registry with
+        one instance per registered class.
+
+        The import of the `indicators` package happens lazily here
+        (not at indicators/registry.py's own import time) to avoid a
+        circular import between indicators/__init__.py and this module.
+        """
+        import indicators as indicators_package
+
+        for _, module_name, _ in pkgutil.iter_modules(indicators_package.__path__):
+            if module_name in _NON_INDICATOR_MODULES:
+                continue
+            importlib.import_module(f"indicators.{module_name}")
+
+        registry = cls()
+        for indicator_cls in _REGISTRY.values():
+            registry.register(indicator_cls())
+        return registry
+
+
+===== DOSYA: indicators/relative_strength.py =====
+"""
+QDE V1 - indicators/relative_strength.py
+
+Relative Strength indicator (Document 03 SS3.F) - "one of the highest
+priority features": does the coin outperform BTC?
+
+V1 data-availability note:
+    BaseIndicator.calculate() receives only the target symbol's
+    MarketData (Document 06 SS6 plugin isolation - indicators never
+    call other indicators or the exchange directly). To compare
+    against BTC without violating that isolation, this indicator reads
+    an optional `btc_percentage` key that data.collector may attach to
+    `market_data.ticker` (the 24h % change of BTCUSDT for the same
+    scan). If absent, the indicator falls back to the symbol's own 24h
+    change as a lower-confidence proxy rather than crashing or
+    fabricating a comparison (Document 03 SS13: missing feature ->
+    reduced confidence, not crash). Wiring the BTC baseline into every
+    ticker is a collector-level enhancement tracked for the next
+    implementation pass and does not require any change to this
+    indicator's interface.
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+
+@register_indicator
+class RelativeStrengthIndicator(BaseIndicator):
+    name = "relative_strength"
+    family = FeatureFamily.MARKET
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        percentage = market_data.ticker.get("percentage")
+        if percentage is None:
+            return self._unavailable("ticker_percentage_missing")
+
+        btc_percentage = market_data.ticker.get("btc_percentage")
+
+        if btc_percentage is not None:
+            rs = percentage - btc_percentage
+            score = max(-15.0, min(20.0, rs))
+            status = (
+                FeatureStatus.POSITIVE
+                if rs > 1.0
+                else FeatureStatus.NEGATIVE
+                if rs < -1.0
+                else FeatureStatus.NEUTRAL
+            )
+            value = self._clamp(50.0 + rs)
+            metadata = {
+                "symbol_change_pct": percentage,
+                "btc_change_pct": btc_percentage,
+                "relative_strength_pct": rs,
+                "baseline": "btc",
+            }
+        else:
+            # Lower-confidence fallback: symbol's own momentum only.
+            score = max(-5.0, min(5.0, percentage / 2.0))
+            status = (
+                FeatureStatus.POSITIVE
+                if percentage > 0
+                else FeatureStatus.NEGATIVE
+                if percentage < 0
+                else FeatureStatus.NEUTRAL
+            )
+            value = self._clamp(50.0 + percentage)
+            metadata = {
+                "symbol_change_pct": percentage,
+                "baseline": "self_only_v1_fallback",
+            }
+
+        return Feature(
+            name=self.name,
+            value=value,
+            score=score,
+            status=status,
+            family=self.family,
+            metadata=metadata,
+        )
+
+
+===== DOSYA: indicators/trend.py =====
+"""
+QDE V1 - indicators/trend.py
+
+Trend Quality indicator (Document 03 SS3.A). Evaluates higher-timeframe
+EMA alignment (Document 02 SS7: trend uses 4H).
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_PRIMARY_TIMEFRAME = "4h"
+_FALLBACK_TIMEFRAME = "1h"
+_MIN_CANDLES = 200
+
+
+def _ema(values: list[float], period: int) -> list[float]:
+    """Standard exponential moving average, seeded with the first value."""
+    if not values:
+        return []
+    k = 2.0 / (period + 1)
+    result = [values[0]]
+    for v in values[1:]:
+        result.append(v * k + result[-1] * (1 - k))
+    return result
+
+
+@register_indicator
+class TrendIndicator(BaseIndicator):
+    name = "trend"
+    family = FeatureFamily.TREND
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_PRIMARY_TIMEFRAME) or market_data.get_timeframe(
+            _FALLBACK_TIMEFRAME
+        )
+        if tf is None or len(tf.candles) < _MIN_CANDLES:
+            return self._unavailable("insufficient_candle_history")
+
+        closes = tf.closes()
+        ema20 = _ema(closes, 20)[-1]
+        ema50 = _ema(closes, 50)[-1]
+        ema200 = _ema(closes, 200)[-1]
+        price = closes[-1]
+
+        bullish_alignment = price > ema20 > ema50 > ema200
+        bearish_alignment = price < ema20 < ema50 < ema200
+
+        if bullish_alignment:
+            score, status, value = 20.0, FeatureStatus.POSITIVE, 95.0
+        elif bearish_alignment:
+            score, status, value = -15.0, FeatureStatus.NEGATIVE, 5.0
+        else:
+            pct_from_ema200 = ((price - ema200) / ema200) * 100 if ema200 else 0.0
+            score = max(-10.0, min(10.0, pct_from_ema200))
+            status = (
+                FeatureStatus.POSITIVE
+                if pct_from_ema200 > 0
+                else FeatureStatus.NEGATIVE
+                if pct_from_ema200 < 0
+                else FeatureStatus.NEUTRAL
+            )
+            value = self._clamp(50.0 + pct_from_ema200)
+
+        return Feature(
+            name=self.name,
+            value=value,
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "timeframe": tf.timeframe,
+                "ema20": ema20,
+                "ema50": ema50,
+                "ema200": ema200,
+                "price": price,
+                "bullish_alignment": bullish_alignment,
+                "bearish_alignment": bearish_alignment,
+            },
+        )
+
+
+===== DOSYA: indicators/volatility.py =====
+"""
+QDE V1 - indicators/volatility.py
+
+Volatility Compression indicator (Document 03 SS3.C). Detects stored
+energy via Bollinger Band width percentile rank on the 1h timeframe.
+Longer, cleaner compressions (low percentile = tight bands relative to
+recent history) receive higher scores (Document 03 SS3.C).
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_TIMEFRAME = "1h"
+_BB_PERIOD = 20
+_MIN_WIDTH_SAMPLES = 30  # minimum rolling window count for a meaningful percentile
+
+_TIGHT_PERCENTILE = 40.0   # below this => genuine compression
+_LOOSE_PERCENTILE = 80.0   # above this => expanded / no compression
+
+
+def _rolling_band_widths(closes: list[float], period: int) -> list[float]:
+    """Bollinger Band width = (upper - lower) / middle for every window
+    of `period` closes, computed across the full closes series.
+    """
+    widths = []
+    for i in range(period, len(closes) + 1):
+        window = closes[i - period : i]
+        sma = sum(window) / period
+        variance = sum((x - sma) ** 2 for x in window) / period
+        std = variance ** 0.5
+        upper = sma + 2 * std
+        lower = sma - 2 * std
+        width = (upper - lower) / sma if sma else 0.0
+        widths.append(width)
+    return widths
+
+
+def _percentile_rank(value: float, population: list[float]) -> float:
+    """Percentile rank of `value` within `population`, 0-100."""
+    if len(population) <= 1:
+        return 50.0
+    sorted_pop = sorted(population)
+    below = sum(1 for v in sorted_pop if v < value)
+    return (below / (len(sorted_pop) - 1)) * 100.0 if len(sorted_pop) > 1 else 50.0
+
+
+@register_indicator
+class VolatilityIndicator(BaseIndicator):
+    name = "volatility"
+    family = FeatureFamily.STRUCTURE
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_TIMEFRAME)
+        if tf is None:
+            return self._unavailable("timeframe_missing")
+
+        closes = tf.closes()
+        widths = _rolling_band_widths(closes, _BB_PERIOD)
+        if len(widths) < _MIN_WIDTH_SAMPLES:
+            return self._unavailable("insufficient_candle_history")
+
+        current_width = widths[-1]
+        percentile = _percentile_rank(current_width, widths)
+
+        if percentile <= _TIGHT_PERCENTILE:
+            # Tighter compression than most of recent history -> reward,
+            # scaled so the tightest readings score highest.
+            score = ((_TIGHT_PERCENTILE - percentile) / _TIGHT_PERCENTILE) * 15.0
+            status = FeatureStatus.POSITIVE
+        elif percentile >= _LOOSE_PERCENTILE:
+            score = -((percentile - _LOOSE_PERCENTILE) / (100 - _LOOSE_PERCENTILE)) * 8.0
+            status = FeatureStatus.NEGATIVE
+        else:
+            score = 0.0
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(percentile),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "timeframe": tf.timeframe,
+                "band_width": current_width,
+                "percentile": percentile,
+            },
+        )
+
+
+===== DOSYA: indicators/volume.py =====
+"""
+QDE V1 - indicators/volume.py
+
+Volume Quality indicator (Document 03 SS3.E). Measures participation
+via the current candle's volume relative to its recent average
+(volume expansion), on the 15m timeframe.
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_TIMEFRAME = "15m"
+_LOOKBACK = 20  # candles used to compute the baseline average
+
+_STRONG_EXPANSION = 2.0
+_MILD_EXPANSION = 1.3
+_WEAK_RATIO = 0.6
+
+
+@register_indicator
+class VolumeIndicator(BaseIndicator):
+    name = "volume"
+    family = FeatureFamily.PARTICIPATION
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_TIMEFRAME)
+        if tf is None:
+            return self._unavailable("timeframe_missing")
+
+        volumes = tf.volumes()
+        if len(volumes) < _LOOKBACK + 1:
+            return self._unavailable("insufficient_candle_history")
+
+        current = volumes[-1]
+        baseline_window = volumes[-(_LOOKBACK + 1) : -1]
+        average = sum(baseline_window) / len(baseline_window)
+        if average <= 0:
+            return self._unavailable("zero_baseline_volume")
+
+        ratio = current / average
+
+        if ratio >= _STRONG_EXPANSION:
+            score, status = 18.0, FeatureStatus.POSITIVE
+        elif ratio >= _MILD_EXPANSION:
+            score, status = 10.0, FeatureStatus.POSITIVE
+        elif ratio <= _WEAK_RATIO:
+            score, status = -10.0, FeatureStatus.NEGATIVE
+        else:
+            score = max(-3.0, min(3.0, (ratio - 1.0) * 10.0))
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(ratio * 50.0),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={"timeframe": tf.timeframe, "ratio": ratio, "average": average},
+        )
+
+
+===== DOSYA: data/__init__.py =====
+"""
+QDE V1 - data package
+
+Single source of truth for all Binance Futures market data. No
+indicator or engine module talks to the exchange or cache directly -
+everything consumes DataCollector.fetch() output (models.MarketData).
+"""
+
+from data.exchange import ExchangeClient
+from data.cache import MarketCache
+from data.collector import DataCollector
+
+__all__ = ["ExchangeClient", "MarketCache", "DataCollector"]
+
+
+===== DOSYA: data/cache.py =====
+"""
+QDE V1 - data/cache.py
+
+Market data cache (Document 02 SS9, Document 07 SS13).
+
+Architecture:
+    Binance -> Cache -> Indicators
+
+Ensures identical data (e.g. 15m candles for ETHUSDT) is downloaded
+once and reused by every indicator that needs it, and across cache
+levels with different TTLs (exchange info rarely changes, OHLCV
+changes every scan, indicator results are scan-scoped).
+
+Dependency level: 0 (no internal imports).
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class _CacheEntry:
+    value: Any
+    expires_at: float
+
+
+class MarketCache:
+    """In-memory TTL cache keyed by (symbol, data_type, timeframe).
+
+    TTLs are configured per data_type via `ttl_config`
+    (Document 09 SS8: config.json -> cache.ttl_seconds), e.g.:
+        {"exchange_info": 3600, "ohlcv": 60, "ticker": 30}
+
+    A data_type with no configured TTL defaults to `default_ttl`
+    seconds (one full scan's worth), so results are safely reused
+    within a single scan even if not explicitly configured.
+    """
+
+    def __init__(self, ttl_config: dict[str, int], default_ttl: int = 120) -> None:
+        self._ttl_config = ttl_config
+        self._default_ttl = default_ttl
+        self._store: dict[tuple[str, str, str | None], _CacheEntry] = {}
+
+    def _key(self, symbol: str, data_type: str, timeframe: str | None) -> tuple[str, str, str | None]:
+        return (symbol, data_type, timeframe)
+
+    def _ttl_for(self, data_type: str) -> int:
+        return self._ttl_config.get(data_type, self._default_ttl)
+
+    def get(self, symbol: str, data_type: str, timeframe: str | None = None) -> Any | None:
+        """Return the cached value, or None if missing/expired."""
+        key = self._key(symbol, data_type, timeframe)
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() >= entry.expires_at:
+            del self._store[key]
+            return None
+        return entry.value
+
+    def set(self, symbol: str, data_type: str, value: Any, timeframe: str | None = None) -> None:
+        key = self._key(symbol, data_type, timeframe)
+        ttl = self._ttl_for(data_type)
+        self._store[key] = _CacheEntry(value=value, expires_at=time.monotonic() + ttl)
+
+    def has(self, symbol: str, data_type: str, timeframe: str | None = None) -> bool:
+        return self.get(symbol, data_type, timeframe) is not None
+
+    def clear(self) -> None:
+        """Wipe the entire cache. Useful between independent scan runs
+        if stale data must not leak across scans.
+        """
+        self._store.clear()
+
+    def size(self) -> int:
+        return len(self._store)
+
+
+===== DOSYA: data/collector.py =====
+"""
+QDE V1 - data/collector.py
+
+Data Collector (Document 02, entire document; Document 06 SS7 unified
+market object). Orchestrates ExchangeClient + MarketCache to produce
+one MarketData object per symbol. No downstream module (indicators,
+engines) ever talks to the exchange or the cache directly.
+
+Design boundary (Document 02 SS18): the collector downloads, validates,
+and caches data, and assembles unified objects. It never calculates
+indicators, scores setups, or produces signals.
+
+Dependency level: 2 (depends on data.exchange, data.cache,
+models.market_data).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from typing import Any
+
+from data.exchange import ExchangeClient
+from data.cache import MarketCache
+from models.market_data import MarketData, OHLCVCandle, TimeframeData
+
+
+_TIMEFRAME_MS = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+}
+
+
+def _drop_unclosed_candle(candles: list[OHLCVCandle], timeframe: str) -> list[OHLCVCandle]:
+    """Binance/ccxt's fetch_ohlcv returns the currently-forming candle
+    as the last element when no `since`/end-time is given - its close
+    price is still moving, so any indicator reading closes()[-1] would
+    be reading a value that can repaint within the same period
+    (Document 10-style look-ahead risk). Drop it if its expected close
+    time hasn't passed yet.
+    """
+    if not candles:
+        return candles
+    duration_ms = _TIMEFRAME_MS.get(timeframe)
+    if duration_ms is None:
+        return candles  # unknown timeframe string - leave as-is rather than guess
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    last_candle_close_ms = candles[-1].timestamp + duration_ms
+    if last_candle_close_ms > now_ms:
+        return candles[:-1]
+    return candles
+
+
+class DataCollector:
+    """Downloads, caches, and assembles MarketData for one or many symbols.
+
+    Always requests more history than the strict minimum
+    (Document 02 SS8: "Always download more than required"), controlled
+    by `history_buffer_multiplier`.
+    """
+
+    def __init__(
+        self,
+        exchange: ExchangeClient,
+        cache: MarketCache,
+        timeframes: list[str],
+        required_candles: dict[str, int],
+        history_buffer_multiplier: float = 1.2,
+    ) -> None:
+        self.exchange = exchange
+        self.cache = cache
+        self.timeframes = timeframes
+        self.required_candles = required_candles
+        self.history_buffer_multiplier = history_buffer_multiplier
+
+    async def fetch(self, symbol: str) -> MarketData:
+        """Assemble one unified MarketData object for `symbol`
+        (Document 02 SS14 output shape).
+        """
+        timeframe_results = await asyncio.gather(
+            *[self._fetch_timeframe(symbol, tf) for tf in self.timeframes]
+        )
+        timeframes = dict(zip(self.timeframes, timeframe_results))
+
+        funding, open_interest, ticker, mark_price = await asyncio.gather(
+            self._fetch_funding(symbol),
+            self._fetch_open_interest(symbol),
+            self._fetch_ticker(symbol),
+            self._fetch_mark_price(symbol),
+        )
+
+        return MarketData(
+            symbol=symbol,
+            timeframes=timeframes,
+            funding=funding,
+            open_interest=open_interest,
+            ticker=ticker,
+            mark_price=mark_price,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    async def fetch_batch(self, symbols: list[str]) -> list[MarketData]:
+        """Fetch MarketData for many symbols concurrently. Per-symbol
+        failures are isolated and excluded from the result rather than
+        aborting the batch (Document 02 SS12).
+        """
+        results = await asyncio.gather(
+            *[self.fetch(s) for s in symbols], return_exceptions=True
+        )
+        market_data_list: list[MarketData] = []
+        for symbol, result in zip(symbols, results):
+            if isinstance(result, Exception):
+                continue  # caller (main.QDEPipeline) is responsible for logging
+            market_data_list.append(result)
+        return market_data_list
+
+    async def prefetch_bulk(self, symbols: list[str]) -> None:
+        """Warms the cache for ticker/funding/mark_price using bulk
+        endpoints (Document "Bulk API" revision) instead of the ~1,500
+        individual per-symbol REST calls a 500-symbol scan previously
+        required (Document 10 SS6.2). Must be called AFTER the
+        exchange's symbol universe has been loaded at least once
+        (ExchangeClient.get_active_symbols() does this via
+        load_markets()) - get_all_mark_prices() needs markets_by_id
+        populated to map Binance's raw symbol IDs back to ccxt's
+        unified symbol format.
+
+        Safe to call even if a bulk call partially fails or omits a
+        symbol: _fetch_ticker/_fetch_funding/_fetch_mark_price already
+        fall back to the individual per-symbol endpoint on a cache
+        miss, so missing bulk coverage degrades to the old behavior
+        for just that symbol rather than failing the scan.
+        """
+        try:
+            tickers, funding_rates, mark_prices = await asyncio.gather(
+                self.exchange.get_all_tickers(),
+                self.exchange.get_all_funding_rates(),
+                self.exchange.get_all_mark_prices(),
+            )
+        except Exception:
+            return  # per-symbol fallback in _fetch_* handles this scan just fine
+
+        symbol_set = set(symbols)
+        for symbol, value in tickers.items():
+            if symbol in symbol_set:
+                self.cache.set(symbol, "ticker", value)
+        for symbol, value in funding_rates.items():
+            if symbol in symbol_set:
+                self.cache.set(symbol, "funding", value)
+        for symbol, value in mark_prices.items():
+            if symbol in symbol_set:
+                self.cache.set(symbol, "mark_price", value)
+
+    # -- per-field fetchers (cache-first) --------------------------------
+
+    async def _fetch_timeframe(self, symbol: str, timeframe: str) -> TimeframeData:
+        cached = self.cache.get(symbol, "ohlcv", timeframe)
+        if cached is not None:
+            return cached
+
+        minimum = self.required_candles.get(timeframe, 100)
+        # +1 to compensate for _drop_unclosed_candle potentially removing
+        # the still-forming last candle (Document 10 look-ahead fix) -
+        # without this, dropping one candle could leave fewer than
+        # `minimum`, tripping Hard Filter Rule 3 for no real reason.
+        limit = int(minimum * self.history_buffer_multiplier) + 1
+        raw = await self.exchange.get_ohlcv(symbol, timeframe, limit)
+
+        candles = [
+            OHLCVCandle(
+                timestamp=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+            )
+            for row in raw
+        ]
+        candles = _drop_unclosed_candle(candles, timeframe)
+        tf_data = TimeframeData(timeframe=timeframe, candles=candles)
+        self.cache.set(symbol, "ohlcv", tf_data, timeframe)
+        return tf_data
+
+    async def _fetch_funding(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "funding")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_funding_rate(symbol)
+        self.cache.set(symbol, "funding", value)
+        return value
+
+    async def _fetch_open_interest(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "open_interest")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_open_interest(symbol)
+        self.cache.set(symbol, "open_interest", value)
+        return value
+
+    async def _fetch_ticker(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "ticker")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_ticker(symbol)
+        self.cache.set(symbol, "ticker", value)
+        return value
+
+    async def _fetch_mark_price(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "mark_price")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_mark_price(symbol)
+        self.cache.set(symbol, "mark_price", value)
+        return value
+
+
+===== DOSYA: data/exchange.py =====
+"""
+QDE V1 - data/exchange.py
+
+Binance Futures (USDT-M Perpetual) client (Document 02 SS3-SS4, updated
+access-layer note in Document 02's closing remarks).
+
+Access layer policy:
+    - Primary: ccxt (ccxt.async_support.binanceusdm)
+    - Fallback: ccxt's implicit Binance REST API methods (e.g.
+      `fapiPublicGetPremiumIndex`) for endpoints ccxt's unified API
+      does not fully cover (mark price, some funding/OI history detail).
+    - Data source is always Binance Futures - never Spot, never a
+      third-party aggregator (Document 01 SS8).
+
+Every request goes through RateLimiter.acquire() and is wrapped with
+async_retry so a single transient failure never aborts a scan
+(Document 02 SS10, SS12).
+
+Dependency level: 1 (depends on utils.rate_limiter, utils.retry).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import ccxt.async_support as ccxt_async
+
+from utils.rate_limiter import RateLimiter
+from utils.retry import async_retry, retry_config_from_dict
+
+
+class ExchangeClient:
+    """Thin, rate-limited, retry-wrapped Binance USDT-M Futures client.
+
+    All indicator/collector code depends on this class, never on ccxt
+    directly (Document 02 SS3: "No indicator should directly
+    communicate with Binance").
+    """
+
+    def __init__(self, rate_limit_config: dict[str, Any]) -> None:
+        self._exchange = ccxt_async.binanceusdm(
+            {
+                "enableRateLimit": False,  # QDE's own RateLimiter governs pacing
+                "options": {"defaultType": "future"},
+            }
+        )
+        self._limiter = RateLimiter.from_config(rate_limit_config)
+        self._retry_kwargs = retry_config_from_dict(rate_limit_config)
+
+    async def _call(self, func, *args: Any, weight: float = 1.0, **kwargs: Any) -> Any:
+        """Rate-limit then retry-wrap a single ccxt call."""
+        await self._limiter.acquire(weight)
+
+        @async_retry(**self._retry_kwargs, base_delay=1.0)
+        async def _wrapped() -> Any:
+            return await func(*args, **kwargs)
+
+        return await _wrapped()
+
+    async def get_active_symbols(self) -> list[str]:
+        """Return active USDT-M perpetual symbols only (Document 02 SS5).
+
+        Rejects: quarterly/delivery futures, non-USDT quotes, inverse
+        contracts, inactive/delisted markets.
+        """
+        markets = await self._call(self._exchange.load_markets, weight=5.0, reload=True)
+        symbols: list[str] = []
+        for market in markets.values():
+            if not market.get("active", False):
+                continue
+            if market.get("quote") != "USDT":
+                continue
+            if not market.get("swap", False):
+                continue
+            if not market.get("linear", False):
+                continue
+            info = market.get("info", {})
+            if info.get("contractType") not in (None, "PERPETUAL"):
+                continue
+            symbols.append(market["symbol"])
+        return symbols
+
+    async def get_ohlcv(self, symbol: str, timeframe: str, limit: int, since: int | None = None) -> list[list[float]]:
+        """Returns ccxt's standard OHLCV format:
+        [[timestamp, open, high, low, close, volume], ...]
+
+        `since` (epoch milliseconds, optional): fetch candles starting
+        from this point in time instead of the most recent `limit`
+        candles. Added for outcome_engine.py's fixed-horizon historical
+        lookups (Document "Fixed Horizon Outcome" patch) - every
+        existing caller omits it and gets byte-identical behavior to
+        before this parameter existed.
+        """
+        return await self._call(
+            self._exchange.fetch_ohlcv, symbol, timeframe=timeframe, limit=limit, since=since
+        )
+
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        """24h ticker stats, with spread pre-computed for Hard Filter
+        Rule 7 (Document 02 SS15).
+        """
+        ticker = await self._call(self._exchange.fetch_ticker, symbol)
+        bid = ticker.get("bid")
+        ask = ticker.get("ask")
+        spread = None
+        if bid and ask and bid > 0:
+            mid = (bid + ask) / 2
+            spread = (ask - bid) / mid if mid else None
+        return {
+            "quoteVolume": ticker.get("quoteVolume"),
+            "percentage": ticker.get("percentage"),
+            "bid": bid,
+            "ask": ask,
+            "spread": spread,
+            "last": ticker.get("last"),
+        }
+
+    async def get_funding_rate(self, symbol: str) -> dict[str, Any]:
+        funding = await self._call(self._exchange.fetch_funding_rate, symbol)
+        return {
+            "rate": funding.get("fundingRate"),
+            "next_funding_time": funding.get("fundingTimestamp"),
+        }
+
+    async def get_open_interest(self, symbol: str) -> dict[str, Any]:
+        oi = await self._call(self._exchange.fetch_open_interest, symbol)
+        return {
+            "value": oi.get("openInterestAmount") or oi.get("openInterestValue"),
+            "timestamp": oi.get("timestamp"),
+        }
+
+    async def get_mark_price(self, symbol: str) -> dict[str, Any]:
+        """Uses ccxt's implicit Binance REST method as fallback, since
+        the unified `fetch_mark_price` is not consistently available
+        across ccxt versions for binanceusdm (Document 02 closing note:
+        "official fallback" policy).
+        """
+        market = self._exchange.market(symbol)
+        raw = await self._call(
+            self._exchange.fapiPublicGetPremiumIndex,
+            weight=1.0,
+            params={"symbol": market["id"]},
+        )
+        return {
+            "mark_price": float(raw.get("markPrice", 0.0)) if raw else None,
+            "index_price": float(raw.get("indexPrice", 0.0)) if raw else None,
+        }
+
+    # -- bulk endpoints (V1.1 - Document "Bulk API" revision) ------------
+    #
+    # Fetching ticker/funding/mark-price per symbol meant ~1,500
+    # individual REST calls for a 500-symbol scan (Document 10 SS6.2).
+    # Binance/ccxt expose bulk equivalents that return every symbol's
+    # data in ONE call; DataCollector.prefetch_bulk() calls these once
+    # per scan and warms the cache, so the existing per-symbol
+    # _fetch_ticker/_fetch_funding/_fetch_mark_price methods find a
+    # cache hit and never issue an individual request under normal
+    # operation. Falling back to the individual per-symbol methods
+    # above still works unchanged if a symbol is missing from a bulk
+    # response for any reason.
+
+    async def get_all_tickers(self) -> dict[str, dict[str, Any]]:
+        """Bulk equivalent of get_ticker() for every symbol in one
+        call. Returns {symbol: ticker_dict} using the same shape
+        get_ticker() returns for a single symbol.
+        """
+        raw = await self._call(self._exchange.fetch_tickers, weight=40.0)
+        result: dict[str, dict[str, Any]] = {}
+        for symbol, ticker in raw.items():
+            bid = ticker.get("bid")
+            ask = ticker.get("ask")
+            spread = None
+            if bid and ask and bid > 0:
+                mid = (bid + ask) / 2
+                spread = (ask - bid) / mid if mid else None
+            result[symbol] = {
+                "quoteVolume": ticker.get("quoteVolume"),
+                "percentage": ticker.get("percentage"),
+                "bid": bid,
+                "ask": ask,
+                "spread": spread,
+                "last": ticker.get("last"),
+            }
+        return result
+
+    async def get_all_funding_rates(self) -> dict[str, dict[str, Any]]:
+        """Bulk equivalent of get_funding_rate() for every symbol."""
+        raw = await self._call(self._exchange.fetch_funding_rates, weight=40.0)
+        return {
+            symbol: {
+                "rate": funding.get("fundingRate"),
+                "next_funding_time": funding.get("fundingTimestamp"),
+            }
+            for symbol, funding in raw.items()
+        }
+
+    async def get_all_mark_prices(self) -> dict[str, dict[str, Any]]:
+        """Bulk equivalent of get_mark_price(). Binance's premiumIndex
+        endpoint returns an array covering every symbol when called
+        without a `symbol` parameter (documented REST behavior).
+        """
+        raw = await self._call(self._exchange.fapiPublicGetPremiumIndex, weight=10.0)
+        result: dict[str, dict[str, Any]] = {}
+        for entry in raw:
+            market_id = entry.get("symbol")
+            if not market_id:
+                continue
+            try:
+                unified_symbol = self._exchange.markets_by_id[market_id][0]["symbol"]
+            except (KeyError, IndexError):
+                continue
+            result[unified_symbol] = {
+                "mark_price": float(entry.get("markPrice", 0.0)),
+                "index_price": float(entry.get("indexPrice", 0.0)),
+            }
+        return result
+
+    async def close(self) -> None:
+        """Release the underlying ccxt aiohttp session."""
+        await self._exchange.close()
+
+    async def __aenter__(self) -> "ExchangeClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+
+===== DOSYA: models/__init__.py =====
+"""
+QDE V1 - models package
+
+Pure data layer. Zero business logic, zero I/O. Every other package may
+depend on models/; models/ depends on nothing internal.
+"""
+
+from models.market_data import OHLCVCandle, TimeframeData, MarketData
+from models.feature import Feature, FeatureStatus, FeatureFamily
+from models.setup import Setup
+from models.result import Result, ExpectedMove, RISK_GRADES
+
+__all__ = [
+    "OHLCVCandle",
+    "TimeframeData",
+    "MarketData",
+    "Feature",
+    "FeatureStatus",
+    "FeatureFamily",
+    "Setup",
+    "Result",
+    "ExpectedMove",
+    "RISK_GRADES",
+]
+
+
+===== DOSYA: models/feature.py =====
+"""
+QDE V1 - models/feature.py
+
+Per-indicator output object (Document 03, Document 06 SS6 plugin contract).
+
+Every indicator plugin returns exactly one Feature. The Confidence
+Engine groups Features by `family` to compute feature agreement
+(Document 04 SS4).
+
+Dependency level: 0 (no internal imports). Pure data holder only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class FeatureStatus(str, Enum):
+    """Directional read of a feature, independent of its numeric score."""
+
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+
+
+class FeatureFamily(str, Enum):
+    """Feature families used by the Confidence Engine's agreement matrix
+    (Document 04 SS4). Agreement across families carries more weight than
+    agreement within a single family.
+    """
+
+    TREND = "trend"
+    MOMENTUM = "momentum"
+    PARTICIPATION = "participation"  # volume, open interest, funding
+    STRUCTURE = "structure"          # volatility / compression
+    MARKET = "market"                # BTC trend, regime, relative strength
+
+
+@dataclass(frozen=True)
+class Feature:
+    """Structured output of a single indicator calculation.
+
+    Example (Document 06 SS6):
+        Feature(
+            name="relative_strength",
+            value=84.0,
+            score=15.0,
+            status=FeatureStatus.POSITIVE,
+            family=FeatureFamily.MARKET,
+        )
+    """
+
+    name: str
+    value: float
+    score: float
+    status: FeatureStatus
+    family: FeatureFamily
+    metadata: dict = field(default_factory=dict)
+
+    def is_positive(self) -> bool:
+        return self.status is FeatureStatus.POSITIVE
+
+    def is_negative(self) -> bool:
+        return self.status is FeatureStatus.NEGATIVE
+
+    def is_available(self) -> bool:
+        """Missing/unavailable features should be represented explicitly
+        rather than omitted, so the Confidence Engine can reduce
+        confidence instead of crashing (Document 03 SS13).
+        """
+        return self.status is not None and self.value is not None
+
+
+===== DOSYA: models/market_data.py =====
+"""
+QDE V1 - models/market_data.py
+
+The unified market data object (Document 02 SS14, Document 06 SS7).
+
+This is the single object that flows from data.collector into every
+indicator and into engines.hard_filter. No indicator or engine ever
+requests data from the exchange directly - everything reads from this
+object.
+
+Dependency level: 0 (no internal imports). Pure data holders only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class OHLCVCandle:
+    """A single OHLCV candle."""
+
+    timestamp: int  # epoch milliseconds, UTC
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    def is_valid(self) -> bool:
+        """Basic sanity check used by Hard Filter Rule 9 (corrupted data)."""
+        values = (self.open, self.high, self.low, self.close, self.volume)
+        if any(v is None for v in values):
+            return False
+        if any(v != v for v in values):  # NaN check without importing math
+            return False
+        if self.high < self.low:
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class TimeframeData:
+    """OHLCV history for a single timeframe (e.g. '15m', '1h')."""
+
+    timeframe: str
+    candles: list[OHLCVCandle] = field(default_factory=list)
+
+    def closes(self) -> list[float]:
+        return [c.close for c in self.candles]
+
+    def highs(self) -> list[float]:
+        return [c.high for c in self.candles]
+
+    def lows(self) -> list[float]:
+        return [c.low for c in self.candles]
+
+    def volumes(self) -> list[float]:
+        return [c.volume for c in self.candles]
+
+    def is_sufficient(self, min_candles: int) -> bool:
+        """Used by Hard Filter Rule 3 (missing candle history)."""
+        return len(self.candles) >= min_candles and all(
+            c.is_valid() for c in self.candles
+        )
+
+
+@dataclass
+class MarketData:
+    """Unified per-symbol market snapshot (Document 02 SS14).
+
+    Assembled once per symbol per scan by data.collector.DataCollector
+    and shared read-only by every downstream consumer.
+    """
+
+    symbol: str
+    timeframes: dict[str, TimeframeData]
+    funding: dict[str, Any]
+    open_interest: dict[str, Any]
+    ticker: dict[str, Any]
+    mark_price: dict[str, Any]
+    timestamp: str  # UTC ISO8601
+
+    def has_timeframe(self, timeframe: str) -> bool:
+        return timeframe in self.timeframes and bool(
+            self.timeframes[timeframe].candles
+        )
+
+    def get_timeframe(self, timeframe: str) -> TimeframeData | None:
+        return self.timeframes.get(timeframe)
+
+    def get_closes(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.closes() if tf else []
+
+    def get_highs(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.highs() if tf else []
+
+    def get_lows(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.lows() if tf else []
+
+    def get_volumes(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.volumes() if tf else []
+
+    def has_funding(self) -> bool:
+        """Used by Hard Filter Rule 5 (missing funding data)."""
+        return bool(self.funding)
+
+    def has_open_interest(self) -> bool:
+        """Used by Hard Filter Rule 4 (missing open interest)."""
+        return bool(self.open_interest)
+
+    def quote_volume(self) -> float | None:
+        """Used by Hard Filter Rule 6 (daily quote volume threshold)."""
+        return self.ticker.get("quoteVolume")
+
+    def spread(self) -> float | None:
+        """Used by Hard Filter Rule 7 (spread threshold).
+
+        Expected to be pre-computed by data.collector as
+        (ask - bid) / mid_price and stored in ticker['spread'].
+        """
+        return self.ticker.get("spread")
+
+    def is_minimally_valid(self, required_candles: dict[str, int]) -> bool:
+        """Aggregate validity check combining Hard Filter Rules 3-5, 9.
+
+        required_candles maps timeframe -> minimum candle count
+        (e.g. {'15m': 200, '1h': 250, '4h': 150, '1d': 100}).
+        """
+        if not self.has_funding() or not self.has_open_interest():
+            return False
+        for tf, minimum in required_candles.items():
+            timeframe_data = self.get_timeframe(tf)
+            if timeframe_data is None or not timeframe_data.is_sufficient(minimum):
+                return False
+        return True
+
+
+===== DOSYA: models/result.py =====
+"""
+QDE V1 - models/result.py
+
+The final output object (Document 04 SS17). Wraps a Setup with the
+Confidence Engine's evaluation: confidence, risk grade, uniqueness,
+expected move/duration, and detected contradictions.
+
+This is the object every output renderer (output.terminal,
+output.json_output, output.csv_output) and the Research Engine consume.
+
+Dependency level: 1 (depends only on models.setup).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from models.setup import Setup
+
+
+@dataclass
+class ExpectedMove:
+    """Probability estimates for reaching given expansion thresholds
+    (Document 04 SS8). Values are probabilities in [0, 1].
+    """
+
+    probabilities: dict[str, float] = field(default_factory=dict)
+    # e.g. {"10_percent": 0.84, "20_percent": 0.61, "30_percent": 0.33}
+
+    def to_dict(self) -> dict[str, float]:
+        return dict(self.probabilities)
+
+
+RISK_GRADES = ("A+", "A", "B", "C", "D")
+
+
+@dataclass
+class Result:
+    """Final ranked object for one symbol (Document 04 SS17).
+
+    Example:
+        {
+          "symbol": "ETHFIUSDT",
+          "score": 91,
+          "confidence": 94,
+          "risk_grade": "A",
+          "uniqueness": 96,
+          "expected_move": {"10_percent": 0.84, ...},
+          "expected_duration": "8-24h",
+          "market_regime": "Bull",
+          "contradictions": [],
+          "fingerprint": {...}
+        }
+    """
+
+    setup: Setup
+    confidence: float
+    risk_grade: str
+    uniqueness: float
+    expected_move: ExpectedMove
+    expected_duration: str
+    contradictions: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.risk_grade not in RISK_GRADES:
+            raise ValueError(
+                f"Invalid risk_grade '{self.risk_grade}', must be one of {RISK_GRADES}"
+            )
+
+    @property
+    def symbol(self) -> str:
+        return self.setup.symbol
+
+    @property
+    def score(self) -> float:
+        return self.setup.raw_score
+
+    @property
+    def fingerprint(self) -> dict[str, str]:
+        return self.setup.fingerprint
+
+    def has_contradictions(self) -> bool:
+        return len(self.contradictions) > 0
+
+    def is_institutional_grade(self) -> bool:
+        """Signal category helper for output.terminal (Document 07 SS4)."""
+        return self.risk_grade == "A+" and self.confidence >= 90
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialization helper used by storage.exporter and output.*."""
+        return {
+            "symbol": self.symbol,
+            "score": self.score,
+            "confidence": self.confidence,
+            "risk_grade": self.risk_grade,
+            "uniqueness": self.uniqueness,
+            "expected_move": self.expected_move.to_dict(),
+            "expected_duration": self.expected_duration,
+            "market_regime": self.setup.market_regime,
+            "contradictions": self.contradictions,
+            "fingerprint": self.fingerprint,
+            "feature_scores": self.setup.feature_scores,
+            "passed": self.setup.passed,
+            "setup_id": self.setup.setup_id,
+            "timestamp": self.setup.timestamp,
+        }
+
+
+===== DOSYA: models/setup.py =====
+"""
+QDE V1 - models/setup.py
+
+The Setup record (Document 03 SS15, Document 05 SS17).
+
+Produced by engines.scoring.ScoringEngine, then enriched into a Result
+by engines.confidence.ConfidenceEngine. Persisted as-is (via its
+fingerprint/feature_scores) by engines.research.ResearchEngine.
+
+Dependency level: 0 (no internal imports). Pure data holder only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+import uuid
+
+
+@dataclass
+class Setup:
+    """A single scored market setup for one symbol at one point in time.
+
+    Example (Document 03 SS15):
+        {
+          "symbol": "ETHFIUSDT",
+          "raw_score": 91,
+          "feature_scores": {"trend": 18, "momentum": 15, ...},
+          "penalties": [],
+          "passed": true
+        }
+    """
+
+    symbol: str
+    timestamp: str  # UTC ISO8601
+    market_regime: str
+    raw_score: float
+    feature_scores: dict[str, float] = field(default_factory=dict)
+    penalties: list[str] = field(default_factory=list)
+    fingerprint: dict[str, str] = field(default_factory=dict)
+    passed: bool = False
+    setup_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def total_penalty(self) -> float:
+        """Soft penalties reduce score without rejecting the setup
+        (Document 03 SS7). Penalty reasons are stored as strings;
+        their numeric impact is already folded into raw_score by the
+        Scoring Engine, so this is purely informational/explainability.
+        """
+        return float(len(self.penalties))
+
+    def top_contributing_features(self, n: int = 3) -> list[tuple[str, float]]:
+        """Used by the Explainable AI principle (Document 03 SS14) to
+        show which categories drove the score.
+        """
+        return sorted(
+            self.feature_scores.items(), key=lambda kv: kv[1], reverse=True
+        )[:n]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialization helper for storage.repository implementations."""
+        return {
+            "setup_id": self.setup_id,
+            "symbol": self.symbol,
+            "timestamp": self.timestamp,
+            "market_regime": self.market_regime,
+            "raw_score": self.raw_score,
+            "feature_scores": self.feature_scores,
+            "penalties": self.penalties,
+            "fingerprint": self.fingerprint,
+            "passed": self.passed,
+        }
+
+
+===== DOSYA: output/__init__.py =====
+"""
+QDE V1 - output package
+
+Reporting layer only (Document 07 SS19): renders list[Result] to
+terminal, JSON, and CSV; shows scan progress; and writes live scan
+state for the streaming dashboard. Never downloads data, calculates
+indicators, scores, or alters confidence/research records.
+"""
+
+from output import terminal, json_output, csv_output, progress, live_status
+
+__all__ = ["terminal", "json_output", "csv_output", "progress", "live_status"]
+
+
+===== DOSYA: output/csv_output.py =====
+"""
+QDE V1 - output/csv_output.py
+
+CSV Output renderer (Document 07 SS7). One row per setup, for Excel /
+manual research. Read-only consumer of list[Result]
+(Document 07 SS19).
+
+Dependency level: 2 (depends on models.result, storage.exporter).
+"""
+
+from __future__ import annotations
+
+import csv
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+from storage.exporter import CSV_COLUMNS, to_csv_rows
+
+_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+
+
+def render(results: list[Result], scan_summary: dict[str, Any]) -> str:
+    """Write the CSV scan export to reports/ and return its path."""
+    _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    run_id = scan_summary.get("run_id", "scan")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filepath = _REPORTS_DIR / f"qde_scan_{timestamp}_{run_id}.csv"
+
+    rows = to_csv_rows(results)
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+    return str(filepath)
+
+
+===== DOSYA: output/json_output.py =====
+"""
+QDE V1 - output/json_output.py
+
+JSON Output renderer (Document 07 SS6). One JSON file per scan, for
+dashboard integration, future API, external applications, and
+historical analysis. Read-only consumer of list[Result]
+(Document 07 SS19).
+
+Dependency level: 2 (depends on models.result, storage.exporter).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+from storage.exporter import to_json_dict
+
+_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+
+
+def render(results: list[Result], scan_summary: dict[str, Any]) -> str:
+    """Write the full JSON scan report to reports/ and return its path."""
+    _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    run_id = scan_summary.get("run_id", "scan")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filepath = _REPORTS_DIR / f"qde_scan_{timestamp}_{run_id}.json"
+
+    payload = to_json_dict(results, scan_summary)
+    filepath.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+    return str(filepath)
+
+
+===== DOSYA: output/live_status.py =====
+"""
+QDE V1 - output/live_status.py
+
+Live scan-state writer for the streaming dashboard (dashboard.html).
+Purely presentational and additive: reads only what main.QDEPipeline
+already produces per symbol (name, pass/fail, Result fields) and writes
+a small JSON snapshot to disk. Does not touch indicators, engines, or
+the setups database (Document 07 SS19 - Output Engine only presents).
+
+The dashboard (a static HTML/JS file, opened in a browser and served
+locally) polls this file every ~800ms instead of connecting to Python
+directly - this keeps the dashboard fully decoupled from the engine
+process, matching the same "read-only consumer" boundary every other
+output/ module already respects.
+
+Dependency level: 1 (depends on models.result).
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+
+_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+_STATUS_FILE = _REPORTS_DIR / "live_status.json"
+
+_TICKER_HISTORY = 40
+_SIGNAL_FEED_SIZE = 15
+_SCORE_HISTORY = 60
+
+
+class LiveStatusWriter:
+    """Accumulates rolling scan state and atomically writes it to
+    reports/live_status.json after every symbol.
+
+    Atomic write (write-to-temp-then-rename) so the dashboard never
+    reads a half-written file mid-poll.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.completed = 0
+        self.passed = 0
+        self.rejected = 0
+        self.current_symbol = ""
+        self.ticker: deque[dict[str, Any]] = deque(maxlen=_TICKER_HISTORY)
+        self.signal_feed: deque[dict[str, Any]] = deque(maxlen=_SIGNAL_FEED_SIZE)
+        self.score_history: deque[float] = deque(maxlen=_SCORE_HISTORY)
+        self._confidence_sum = 0.0
+        self._score_sum = 0.0
+        _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def update(self, symbol: str, result: Result | None) -> None:
+        self.completed += 1
+        self.current_symbol = symbol
+        passed = result is not None and result.setup.passed
+
+        if passed:
+            self.passed += 1
+            self._confidence_sum += result.confidence
+            self._score_sum += result.score
+            self.score_history.append(result.score)
+            self.signal_feed.appendleft(
+                {
+                    "symbol": result.symbol,
+                    "confidence": result.confidence,
+                    "score": result.score,
+                    "risk_grade": result.risk_grade,
+                    "uniqueness": result.uniqueness,
+                }
+            )
+        else:
+            self.rejected += 1
+            if result is not None:
+                self.score_history.append(result.score)
+
+        self.ticker.append({"symbol": symbol, "passed": passed})
+        self._write(scan_complete=False)
+
+    def finish(self) -> None:
+        self._write(scan_complete=True)
+
+    def _write(self, scan_complete: bool) -> None:
+        avg_confidence = round(self._confidence_sum / self.passed, 1) if self.passed else 0.0
+        avg_score = round(self._score_sum / self.passed, 1) if self.passed else 0.0
+
+        payload = {
+            "current_symbol": self.current_symbol,
+            "completed": self.completed,
+            "total": self.total,
+            "passed": self.passed,
+            "rejected": self.rejected,
+            "avg_confidence": avg_confidence,
+            "avg_score": avg_score,
+            "ticker": list(self.ticker),
+            "signal_feed": list(self.signal_feed),
+            "score_history": list(self.score_history),
+            "scan_complete": scan_complete,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Atomic write: temp file in the same directory, then replace.
+        fd, tmp_path = tempfile.mkstemp(dir=_REPORTS_DIR, suffix=".tmp")
+        try:
+            with open(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            Path(tmp_path).replace(_STATUS_FILE)
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
+
+
+===== DOSYA: output/progress.py =====
+"""
+QDE V1 - output/progress.py
+
+Terminal progress indicator (Document 07 SS5 UX intent: a professional
+scan view, not a per-symbol log stream). Purely presentational - reads
+only what main.QDEPipeline already produces per symbol (its name and
+pass/fail status). Never touches indicators, engines, or storage
+(Document 07 SS19).
+
+V1.1 fix note: the original renderer padded every line to a fixed 90
+characters. On a narrow terminal (e.g. a phone's Termux window, often
+40-50 columns), a 90-character line wraps onto multiple screen rows,
+and "\r" only returns the cursor to the start of the *last* wrapped
+row - not the whole block - so each update stacked a new block below
+the previous one instead of overwriting it (exactly the "coins
+listing downward" symptom). This version:
+    - Measures the real terminal width every render (shutil) and
+      builds a line that always fits within it, so it can never wrap.
+    - Uses the ANSI "clear to end of line" sequence instead of manual
+      padding, so leftover characters from a longer previous line are
+      always erased regardless of exact length.
+    - Shortens ccxt-style symbols ("GPS/USDT:USDT") to the plain form
+      ("GPSUSDT") for display only - shorter, and matches every other
+      output surface (JSON/CSV/DB), which already stores symbols this
+      way via the rest of the pipeline.
+
+Dependency level: 0 (no internal imports beyond stdlib).
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+
+_CLEAR_TO_EOL = "\x1b[K"
+_MIN_BAR_WIDTH = 8
+_MAX_BAR_WIDTH = 24
+_FALLBACK_COLUMNS = 60
+
+
+def _short_symbol(symbol: str) -> str:
+    """'GPS/USDT:USDT' -> 'GPSUSDT'; '1000SATS/USDT:USDT' -> '1000SATSUSDT'.
+    Falls back to the original string unchanged if it doesn't match the
+    ccxt swap-symbol shape (e.g. already plain, or unexpected format).
+    """
+    if "/" not in symbol:
+        return symbol
+    base = symbol.split("/", 1)[0]
+    return f"{base}USDT"
+
+
+class ProgressReporter:
+    """Renders a single, continuously-updated progress line instead of
+    one printed line per symbol. Call `update()` after each symbol
+    completes; call `finish()` once, after the scan loop ends, before
+    any further terminal output is printed.
+    """
+
+    def __init__(self, total: int, bar_width: int = 24, enabled: bool = True) -> None:
+        self.total = max(total, 1)
+        self.bar_width = bar_width
+        self.enabled = enabled and sys.stdout.isatty()
+        self.completed = 0
+        self.passed = 0
+        self.rejected = 0
+        self._started = False
+
+    def update(self, symbol: str, passed: bool) -> None:
+        self.completed += 1
+        if passed:
+            self.passed += 1
+        else:
+            self.rejected += 1
+        self._render(symbol)
+
+    def _terminal_width(self) -> int:
+        try:
+            return shutil.get_terminal_size(fallback=(_FALLBACK_COLUMNS, 24)).columns
+        except Exception:
+            return _FALLBACK_COLUMNS
+
+    def _render(self, current_symbol: str) -> None:
+        if not self.enabled:
+            return
+
+        width = max(20, self._terminal_width() - 1)  # -1: avoid edge-of-line auto-wrap
+        fraction = self.completed / self.total
+        symbol_display = _short_symbol(current_symbol)
+
+        # Fixed-cost part of the line (percentage + passed/rejected
+        # counters); whatever width remains is split between the bar
+        # and the symbol name, both shrinking gracefully on narrow
+        # screens instead of ever exceeding `width`.
+        suffix = f" {fraction * 100:5.1f}% P:{self.passed} R:{self.rejected}"
+        budget_for_bar_and_symbol = max(10, width - len(suffix) - 3)  # -3 for "[ ] "
+        bar_width = max(_MIN_BAR_WIDTH, min(_MAX_BAR_WIDTH, budget_for_bar_and_symbol // 2))
+        symbol_budget = max(4, budget_for_bar_and_symbol - bar_width)
+        symbol_display = symbol_display[:symbol_budget]
+
+        filled = int(bar_width * fraction)
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        line = f"\r[{bar}]{suffix} {symbol_display}"
+        line = line[:width]  # hard safety cap regardless of the budget math above
+
+        sys.stdout.write(line + _CLEAR_TO_EOL)
+        sys.stdout.flush()
+        self._started = True
+
+    def pause_for_message(self) -> None:
+        """Move the cursor past the progress line so an interleaved
+        message (e.g. a SIGNAL FOUND block) prints cleanly below it,
+        without the next update overwriting it.
+        """
+        if self.enabled and self._started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+    def finish(self) -> None:
+        if self.enabled and self._started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+    def print_header(self, total_symbols: int) -> None:
+        print("-" * 54)
+        print("QDE Quant Engine")
+        print()
+        print("Market: Binance Futures")
+        print(f"Scanning {total_symbols} symbols...")
+        print()
+
+
+===== DOSYA: output/terminal.py =====
+"""
+QDE V1 - output/terminal.py
+
+Terminal Output renderer (Document 07 SS5, SS8, SS9). Read-only
+consumer of list[Result] - never downloads data, calculates
+indicators, or alters scores/confidence (Document 07 SS19).
+
+V1.1 changes:
+    - `render()` (the end-of-scan summary) is now compact - full
+      per-candidate detail is shown live via `print_signal_found()`
+      the moment a symbol passes, so the final report doesn't repeat
+      it (avoids the "wall of text" the per-candidate block produced
+      when many symbols qualified).
+    - `print_signal_found()` prints a colored block the instant a
+      symbol passes the full pipeline, using ANSI escape codes. It
+      only prints fields QDE actually computes (confidence, score,
+      risk grade, momentum, relative strength, volume). Stop Loss /
+      Take Profit / Risk-Reward / Entry are NOT included because no
+      engine in this codebase computes them yet - printing them would
+      mean fabricating numbers, which this renderer must never do
+      (Document 07 SS19: it only presents what was actually
+      calculated).
+
+Dependency level: 2 (depends on models.result, storage.exporter).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from models.result import Result
+from storage.exporter import to_explainability_dict
+
+_TOP_SIGNALS_DISPLAYED = 15
+_SEPARATOR = "=" * 54
+
+# ANSI color codes. Terminal renderers that redirect to a non-tty
+# (e.g. piped into a file) will see raw escape codes; callers that
+# care can check sys.stdout.isatty() before invoking these functions,
+# matching output.progress.ProgressReporter's own tty check.
+_GREEN = "\033[92m"
+_ORANGE = "\033[93m"
+_TURQUOISE = "\033[96m"
+_PURPLE = "\033[95m"
+_YELLOW = "\033[33m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
+
+
+def _color(text: str, code: str) -> str:
+    return f"{code}{text}{_RESET}"
+
+
+def _category(result: Result) -> str:
+    """Research category label instead of BUY/SELL (Document 07 SS4)."""
+    if not result.setup.passed:
+        return "Rejected"
+    if result.is_institutional_grade():
+        return "Institutional Grade"
+    if result.confidence >= 85 and result.score >= 80:
+        return "High Probability"
+    if result.confidence >= 70:
+        return "Momentum Candidate"
+    if result.score >= 60:
+        return "Early Expansion"
+    if result.score >= 40:
+        return "Watchlist"
+    return "Speculative"
+
+
+# Public alias: performance_tracker.py (a standalone plugin module)
+# reuses this categorization for display consistency. No behavior
+# change - same function, just importable under a non-private name.
+category_label = _category
+
+
+def print_signal_found(result: Result) -> None:
+    """Print a colored block the instant a symbol passes the full
+    pipeline (Hard Filter + Scoring + Confidence). Only fields QDE
+    actually computed are shown.
+    """
+    fs = result.setup.feature_scores
+    print()
+    print(_color("✓ SIGNAL FOUND", _BOLD + _GREEN))
+    print()
+    print(_color(result.symbol, _BOLD))
+    print(f"Category ........... {_category(result)}")
+    print(f"Confidence .......... {_color(f'{result.confidence:.0f}', _GREEN)}")
+    print(f"Score ............... {_color(f'{result.score:.0f}', _GREEN)}")
+    print(f"Grade ............... {_color(result.risk_grade, _GREEN)}")
+    if "momentum" in fs:
+        momentum_str = f"{fs['momentum']:.1f}"
+        print(f"Momentum ............ {_color(momentum_str, _GREEN)}")
+    if "relative_strength" in fs:
+        rs_str = f"{fs['relative_strength']:.1f}"
+        print(f"Relative Strength ... {_color(rs_str, _GREEN)}")
+    if "volume" in fs:
+        volume_str = f"{fs['volume']:.1f}"
+        print(f"Volume Score ........ {_color(volume_str, _GREEN)}")
+    print(f"Uniqueness .......... {result.uniqueness:.0f}")
+    print(f"Expected Window ..... {result.expected_duration}")
+    if result.contradictions:
+        print(f"Warnings ............ {_color(', '.join(result.contradictions), _ORANGE)}")
+    # Stop Loss / Take Profit / Risk-Reward / Entry intentionally
+    # omitted: no engine in this codebase computes them (see module
+    # docstring). They will appear here, in these colors, once a V2
+    # risk-management engine actually produces them:
+    #   Stop Loss    -> orange   Take Profit -> turquoise
+    #   Risk/Reward  -> purple   Entry       -> yellow
+    print("-" * 54)
+
+
+def _print_top_signals(results: list[Result], tie_break_results: dict[str, Any] | None = None) -> None:
+    passed = [r for r in results if r.setup.passed]
+    top = passed[:_TOP_SIGNALS_DISPLAYED]
+    if not top:
+        print("Top Signals: none")
+        return
+
+    print("Top Signals")
+    print()
+    for i, result in enumerate(top, start=1):
+        print(f"{i})")
+        print(result.symbol)
+        print(f"Confidence {result.confidence:.0f}")
+        print(f"Score      {result.score:.0f}")
+        if tie_break_results and result.symbol in tie_break_results:
+            tb = tie_break_results[result.symbol]
+            print(f"TieBreak   {tb.total:+.1f}")
+        print()
+
+
+def render(results: list[Result], scan_summary: dict[str, Any], tie_break_results: dict[str, Any] | None = None) -> None:
+    """Print the compact end-of-scan report (Document 07 SS5, SS8).
+
+    Rich per-candidate detail (positive/negative factors, expected
+    move, etc.) was already printed live via print_signal_found() as
+    each symbol passed - this summary intentionally does not repeat
+    it, to keep the final report scannable even with many signals.
+
+    `tie_break_results`, if provided (main.QDEPipeline.tie_break_results),
+    shows the additive TieBreak delta next to any symbol the Tie-Break
+    Engine actually reordered (tie_break_engine.py) - never replaces
+    Score/Confidence, only supplements them (Document 12's own
+    explainability requirement).
+    """
+    passed = [r for r in results if r.setup.passed]
+    institutional = [r for r in passed if r.is_institutional_grade()]
+
+    print()
+    print(_SEPARATOR)
+    print("QDE Scan Report")
+    print(_SEPARATOR)
+    print()
+    print(f"Coins Scanned      : {scan_summary.get('symbols_scanned', 0)}")
+    print(f"Qualified          : {scan_summary.get('symbols_passed', 0)}")
+    print(f"Rejected           : {scan_summary.get('symbols_scanned', 0) - scan_summary.get('symbols_passed', 0)}")
+    print(f"Institutional Grade: {len(institutional)}")
+    print(f"Average Score      : {scan_summary.get('avg_score', 0.0)}")
+    print(f"Average Confidence : {scan_summary.get('avg_confidence', 0.0)}")
+    print(f"Scan Duration      : {scan_summary.get('scan_duration_seconds', 0)} sec")
+    print()
+    print("-" * 54)
+    print()
+
+    _print_top_signals(results, tie_break_results)
+
+    print(_SEPARATOR)
+
+
+===== DOSYA: storage/__init__.py =====
+"""
+QDE V1 - storage package
+
+Persistence, logging, and serialization. Business-logic-free: engines/
+call into this package but this package never calls back into engines/
+or indicators/ (Document 07 SS19).
+"""
+
+from storage.logger import QDELogger
+from storage.repository import SetupRepository
+from storage.sqlite_repository import SQLiteRepository
+from storage.exporter import to_json_dict, to_csv_rows, to_explainability_dict, CSV_COLUMNS
+
+__all__ = [
+    "QDELogger",
+    "SetupRepository",
+    "SQLiteRepository",
+    "to_json_dict",
+    "to_csv_rows",
+    "to_explainability_dict",
+    "CSV_COLUMNS",
+]
+
+
+===== DOSYA: storage/exporter.py =====
+"""
+QDE V1 - storage/exporter.py
+
+Pure serialization helpers turning list[Result] into JSON-ready dicts
+or CSV rows. No file I/O happens here - that lives in output/
+(Document 07 SS19: Output Engine only renders, storage.exporter only
+shapes data). Keeping this separate from output/ lets both
+output.json_output and output.csv_output share the same field
+extraction logic without duplicating it.
+
+Dependency level: 1 (depends only on models.result).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from models.result import Result
+
+# Fixed column order for CSV export (Document 07 SS7).
+CSV_COLUMNS = [
+    "symbol",
+    "score",
+    "confidence",
+    "risk_grade",
+    "uniqueness",
+    "market_regime",
+    "expected_duration",
+    "passed",
+    "setup_id",
+    "timestamp",
+]
+
+
+def to_json_dict(results: list[Result], scan_summary: dict[str, Any]) -> dict[str, Any]:
+    """Build the full structured object written to the JSON report
+    (Document 07 SS6).
+    """
+    return {
+        "scan_summary": scan_summary,
+        "results": [r.to_dict() for r in results],
+    }
+
+
+def to_csv_rows(results: list[Result]) -> list[dict[str, Any]]:
+    """Build one flat row per Result, using CSV_COLUMNS as the field
+    whitelist (Document 07 SS7: each row represents one setup).
+    """
+    rows = []
+    for r in results:
+        full = r.to_dict()
+        rows.append({col: full.get(col) for col in CSV_COLUMNS})
+    return rows
+
+
+def to_explainability_dict(result: Result) -> dict[str, Any]:
+    """Build the positive/negative factor breakdown used by both the
+    terminal report and the JSON report (Document 07 SS9).
+    """
+    positives = [name for name, score in result.setup.feature_scores.items() if score > 0]
+    negatives = [name for name, score in result.setup.feature_scores.items() if score < 0]
+    return {
+        "symbol": result.symbol,
+        "positive_factors": positives,
+        "negative_factors": negatives,
+        "penalties": result.setup.penalties,
+        "contradictions": result.contradictions,
+    }
+
+
+===== DOSYA: storage/logger.py =====
+"""
+QDE V1 - storage/logger.py
+
+Structured logging (Document 06 SS10). One shared configuration used
+by every module in the project; nothing here depends on any other
+QDE package.
+
+V1.1 fix note: engines.research logs one INFO line per symbol
+("Research: recorded ..."), which is correct for the log FILE (full
+audit trail of every persisted setup, per Document 05 SS3) but floods
+the console when scanning 500+ symbols. A console-only filter now
+excludes that one logger's records from the terminal while leaving
+the file handler - and every other logger - completely untouched.
+
+Dependency level: 0 (no internal imports).
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+_CONFIGURED = False
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+# Loggers whose records should still be written to the log file (full
+# audit trail) but never printed to the console, because they emit one
+# line per symbol during a scan of 500+ symbols (Document 07 SS3:
+# terminal output must stay clean; database recording must not stop).
+_CONSOLE_EXCLUDED_LOGGERS = {"qde.engines.research"}
+
+# Minimum required log events per Document 06 SS10:
+#   scan started, scan finished, API requests, API failures,
+#   symbol skipped, indicator errors, hard filter rejection,
+#   score calculation, confidence calculation, database write,
+#   execution time.
+# These are emitted by the relevant modules at INFO/WARNING/ERROR/DEBUG
+# as appropriate; this module only configures the logging backend.
+
+
+class _ExcludeLoggersFilter(logging.Filter):
+    """Drops log records from specific logger names on one handler only.
+    Used to keep the console clean without losing anything from the
+    log file.
+    """
+
+    def __init__(self, excluded_names: set[str]) -> None:
+        super().__init__()
+        self._excluded_names = excluded_names
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name not in self._excluded_names
+
+
+class QDELogger:
+    """Factory for module-scoped loggers sharing one global configuration.
+
+    Usage:
+        logger = QDELogger.get(__name__)
+        logger.info("Scan started")
+    """
+
+    @staticmethod
+    def _configure(level: int = logging.INFO) -> None:
+        global _CONFIGURED
+        if _CONFIGURED:
+            return
+
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = _LOG_DIR / "qde.log"
+
+        formatter = logging.Formatter(
+            fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        stream_handler.addFilter(_ExcludeLoggersFilter(_CONSOLE_EXCLUDED_LOGGERS))
+
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        # No filter here on purpose - the file keeps the complete record.
+
+        root = logging.getLogger("qde")
+        root.setLevel(level)
+        root.addHandler(stream_handler)
+        root.addHandler(file_handler)
+        root.propagate = False
+
+        _CONFIGURED = True
+
+    @classmethod
+    def get(cls, name: str, level: int = logging.INFO) -> logging.Logger:
+        """Return a logger scoped under the shared 'qde' root logger."""
+        cls._configure(level)
+        qualified_name = name if name.startswith("qde") else f"qde.{name}"
+        return logging.getLogger(qualified_name)
+
+    @classmethod
+    def set_level(cls, level: int) -> None:
+        """Adjust verbosity at runtime (e.g. --debug CLI flag)."""
+        cls._configure(level)
+        logging.getLogger("qde").setLevel(level)
+
+
+===== DOSYA: storage/repository.py =====
+"""
+QDE V1 - storage/repository.py
+
+Abstract persistence interface (Repository pattern - Document 09 SS11
+addendum, mandatory frozen decision).
+
+SQLite is the V1 implementation (storage.sqlite_repository), but no
+business-logic module (engines.research, main.py) may depend on a
+concrete database driver. Everything depends on this abstraction, so
+PostgreSQL/TimescaleDB can replace SQLite later without touching
+engines/ or main.py.
+
+    SetupRepository (ABC)
+            ^
+            |
+    SQLiteRepository        (V1 - implemented)
+    PostgresRepository       (V2 - future)
+    TimescaleRepository       (V3 - future)
+
+Dependency level: 1 (depends only on models.result).
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any
+
+from models.result import Result
+
+
+class SetupRepository(ABC):
+    """Abstract persistence boundary for Setup/Result records.
+
+    Every method here corresponds directly to a need expressed in
+    Document 05 (Research Engine) and Document 09 SS9 (database schema).
+    Concrete implementations must honor these semantics exactly.
+    """
+
+    @abstractmethod
+    def insert_setup(
+        self,
+        result: Result,
+        price_at_scan: float | None = None,
+        config_version: str | None = None,
+    ) -> None:
+        """Persist a newly produced Result. Must be called for every
+        setup regardless of pass/fail (Document 05 SS3: no setup is
+        ever discarded).
+
+        `price_at_scan` (V1 Final Audit revision - "Data Collection
+        Readiness" data-schema addition): the symbol's price at the
+        moment this setup was scored. Previously this was recorded
+        only for Top 15 signals (performance_tracker.py) or when
+        --audit-capture was explicitly enabled (audit_engine.py) -
+        meaning most scanned symbols, most days, had no price ever
+        persisted, making it permanently impossible to later ask "what
+        happened to the coins we scored well but didn't rank in Top
+        15?" (Document 05's own False Negative analysis goal).
+        Optional/backward compatible: existing callers that don't pass
+        it simply record NULL, same as before this field existed.
+
+        `config_version` (Deep Audit patch item #9): a deterministic
+        identifier (hash or version string) of the config/weights.json
+        content active when this setup was scored - so a future
+        calibration effort can tell which setups were produced under
+        which parameters. Optional/backward compatible; existing rows
+        and callers that omit it get NULL, never a guessed value.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_performance(
+        self,
+        setup_id: str,
+        horizon: str,
+        price_at_horizon: float,
+        mfe: float,
+        mae: float,
+    ) -> None:
+        """Record a future-performance revisit for a previously stored
+        setup (Document 05 SS6-SS8). `horizon` is one of
+        "1h", "6h", "12h", "24h", "48h", "72h", "7d".
+
+        NOTE (Deep Audit finding A5): this method has existed since
+        V1's original design but was never called from anywhere in the
+        codebase - the actual Fixed Horizon Outcome system (patch item
+        P1) uses the new insert_outcome()/get_pending_outcomes() methods
+        below instead, which additionally track target_timestamp,
+        return_pct, high/low, completed, and data_quality - richer than
+        this method's original signature. This method is kept, unused,
+        for backward compatibility with the existing abstract interface;
+        it is not removed per the "destructive migration yapılmamalı"
+        rule.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def insert_outcome(
+        self,
+        setup_id: str,
+        horizon: str,
+        target_timestamp: str | None,
+        target_price: float | None,
+        return_pct: float | None,
+        high: float | None,
+        low: float | None,
+        mfe: float | None,
+        mae: float | None,
+        completed: bool,
+        data_quality: str,
+    ) -> None:
+        """Fixed Horizon Outcome (Deep Audit patch P1). Records the
+        REAL, historical-OHLCV-derived outcome for one (setup_id,
+        horizon) pair - never a "current price at report-generation
+        time" (Deep Audit finding A3/A5; this method's caller,
+        outcome_engine.py, is the only code in this project permitted
+        to determine target_price, and it is contractually forbidden
+        from using a live/current price for it).
+
+        Immutability: once a row for (setup_id, horizon) exists with
+        completed=True, implementations MUST NOT overwrite it on a
+        subsequent call - a completed, real outcome is permanent.
+        Rows with completed=False (missing historical data) MAY be
+        replaced by a later call that successfully finds the data,
+        since nothing real was ever recorded to protect.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_outcome(self, setup_id: str, horizon: str) -> dict[str, Any] | None:
+        """Returns the previously recorded outcome for this
+        (setup_id, horizon), or None if it has never been attempted."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_pending_outcome_targets(self, as_of_iso: str, horizons: dict[str, int]) -> list[dict[str, Any]]:
+        """Returns every (setup, horizon) combination whose
+        target_timestamp (setup.timestamp + horizon seconds) is at or
+        before `as_of_iso`, and which does NOT already have a
+        completed=True outcome recorded. `horizons` maps horizon name
+        to its duration in seconds (e.g. {"30m": 1800, "1h": 3600}).
+
+        Each returned dict includes at least: setup_id, symbol,
+        scan_timestamp (the setup's own timestamp), price_at_scan
+        (used as the entry price for return/MFE/MAE calculations),
+        horizon, target_timestamp (computed, ISO8601).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_setups_by_fingerprint(self, fingerprint: dict[str, str]) -> list[dict[str, Any]]:
+        """Retrieve historical setups matching a given fingerprint
+        structure, used for setup-family statistics (Document 05 SS11).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_statistics(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Aggregate win rate / average MFE / average MAE / average
+        duration / consistency score, optionally filtered by market
+        regime, fingerprint fields, or date range (Document 05 SS11-SS12).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_recent_setups(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return the most recent stored setups. Used by uniqueness
+        providers that graduate from batch-only to historical
+        comparison (Document 09 SS11 addendum) without changing their
+        public API.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_uniqueness(self, setup_id: str, uniqueness: float) -> None:
+        """Overwrite a previously-recorded setup's uniqueness value.
+
+        Needed because uniqueness is computed relative to the full
+        scan batch (Document 04 SS13), but insert_setup() is called
+        per-symbol, before the batch is complete (Document 06 SS8
+        pipeline order). main.QDEPipeline recomputes the true
+        batch-relative uniqueness once ranking has the full batch,
+        then calls this to correct the already-persisted row rather
+        than leaving a stale placeholder in permanent storage.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def record_regime_snapshot(
+        self,
+        scan_id: str,
+        timestamp: str,
+        regime: str,
+        btc_volatility_percentile: float | None,
+        btc_bullish_alignment: bool | None,
+        btc_bearish_alignment: bool | None,
+    ) -> None:
+        """Persists the raw BTC indicator values that produced a given
+        scan's market_regime label (V1 Final Audit revision - "Data
+        Collection Readiness" data-schema addition).
+
+        Every Setup already stores the final regime string
+        (e.g. "bull"), but not the underlying values
+        market_regime.classify_regime() used to arrive at it. Without
+        this, retroactively asking "would a different volatility
+        threshold have classified today differently?" during V2 tuning
+        is impossible - the raw inputs would already be gone.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_scan_run(self, run_id: str, started_at: str) -> None:
+        """Register the start of a scan run (scan_runs table,
+        Document 09 SS9).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def finish_scan_run(self, run_id: str, summary: dict[str, Any]) -> None:
+        """Finalize a scan run record with aggregate statistics."""
+        raise NotImplementedError
+
+
+===== DOSYA: storage/sqlite_repository.py =====
+"""
+QDE V1 - storage/sqlite_repository.py
+
+V1 concrete implementation of storage.repository.SetupRepository, backed
+by SQLite (Document 09 SS9 schema; Document 09 SS11 addendum - kept
+behind the abstract interface so it can be swapped for
+PostgresRepository / TimescaleRepository later without touching
+engines/ or main.py).
+
+V1.1 thread-safety note (Async/Resource Hardening revision): main.py
+now wraps every call into this class with asyncio.to_thread() so
+SQLite writes don't block the event loop (Document 10 SS4: "Blocking
+SQLite calls inside async code"). Python's sqlite3.Connection objects
+are tied to the thread that created them by default - since this
+class holds one long-lived `self._conn` across many different
+asyncio.to_thread() calls (which can each land on a different worker
+thread from Python's default thread pool), the connection is opened
+with `check_same_thread=False`, and every method that touches
+`self._conn` is additionally serialized with `self._lock`
+(threading.Lock, not asyncio.Lock - the contention is between OS
+threads, not asyncio tasks). `check_same_thread=False` alone would
+only silence Python's same-thread assertion; it does not make
+concurrent access from multiple threads safe by itself, so the lock is
+required, not optional.
+
+Deep Audit patch note: `performance_tracking` is extended additively
+with the real Fixed Horizon Outcome columns (target_timestamp,
+return_pct, high, low, completed, data_quality, created_at) plus a
+UNIQUE index on (setup_id, horizon) enforcing the "immutable, one
+outcome per setup+horizon" rule. insert_outcome() never overwrites an
+existing completed=1 row - see its docstring.
+
+Dependency level: 2 (depends on storage.repository, models.result,
+storage.logger).
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+from storage.repository import SetupRepository
+from storage.logger import QDELogger
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS setups (
+    setup_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    market_regime TEXT,
+    raw_score REAL,
+    confidence REAL,
+    uniqueness REAL,
+    risk_grade TEXT,
+    fingerprint_json TEXT,
+    feature_scores_json TEXT,
+    passed INTEGER,
+    classification TEXT
+);
+
+CREATE TABLE IF NOT EXISTS performance_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    setup_id TEXT NOT NULL,
+    horizon TEXT NOT NULL,
+    price_at_horizon REAL,
+    mfe REAL,
+    mae REAL,
+    checked_at TEXT NOT NULL,
+    FOREIGN KEY (setup_id) REFERENCES setups (setup_id)
+);
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+    run_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    symbols_scanned INTEGER,
+    symbols_passed INTEGER,
+    avg_confidence REAL,
+    avg_score REAL
+);
+
+CREATE TABLE IF NOT EXISTS regime_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    regime TEXT,
+    btc_volatility_percentile REAL,
+    btc_bullish_alignment INTEGER,
+    btc_bearish_alignment INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_setups_symbol ON setups (symbol);
+CREATE INDEX IF NOT EXISTS idx_perf_setup_id ON performance_tracking (setup_id);
+CREATE INDEX IF NOT EXISTS idx_regime_scan ON regime_snapshots (scan_id);
+"""
+
+# V1 Final Audit revision - "Data Collection Readiness" additive
+# columns. Added via ALTER TABLE (same pattern already established in
+# performance_tracker.py's _ensure_v1_1_columns) so pre-existing
+# qde.db files from earlier revisions keep working without a manual
+# migration step.
+_ADDITIVE_SETUP_COLUMNS = {
+    "price_at_scan": "REAL",
+    "penalties_json": "TEXT",
+    "contradictions_json": "TEXT",
+    "expected_move_json": "TEXT",
+    "expected_duration": "TEXT",
+    "config_version": "TEXT",  # Deep Audit patch item #9
+}
+
+# Deep Audit patch (P1) - Fixed Horizon Outcome columns, additive to
+# the pre-existing performance_tracking table rather than a brand new
+# table, since this table's original purpose (Document 05 SS6-SS8) was
+# always meant to hold exactly this kind of data - it was simply never
+# wired up (Deep Audit finding A5).
+_ADDITIVE_PERFORMANCE_COLUMNS = {
+    "target_timestamp": "TEXT",
+    "return_pct": "REAL",
+    "high": "REAL",
+    "low": "REAL",
+    "completed": "INTEGER",
+    "data_quality": "TEXT",
+    "created_at": "TEXT",
+}
+
+
+class SQLiteRepository(SetupRepository):
+    """SQLite-backed SetupRepository. See storage.repository for the
+    contract this class must honor.
+    """
+
+    def __init__(self, db_path: str = "qde.db") -> None:
+        self.db_path = db_path
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.logger = QDELogger.get(__name__)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._ensure_additive_columns()
+            self._ensure_outcome_uniqueness_index()
+            self._conn.commit()
+
+    def _ensure_additive_columns(self) -> None:
+        """Adds V1.1 columns to pre-existing tables if missing. Must be
+        called while holding self._lock (matches how it's invoked from
+        _init_schema).
+        """
+        existing_setup_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(setups)")}
+        for column, sql_type in _ADDITIVE_SETUP_COLUMNS.items():
+            if column not in existing_setup_cols:
+                self._conn.execute(f"ALTER TABLE setups ADD COLUMN {column} {sql_type}")
+
+        existing_perf_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(performance_tracking)")}
+        for column, sql_type in _ADDITIVE_PERFORMANCE_COLUMNS.items():
+            if column not in existing_perf_cols:
+                self._conn.execute(f"ALTER TABLE performance_tracking ADD COLUMN {column} {sql_type}")
+
+    def _ensure_outcome_uniqueness_index(self) -> None:
+        """Deep Audit patch item #6: setup_id + horizon must be unique.
+        A UNIQUE index (rather than a table-level constraint, since the
+        table already existed pre-migration) enforces this at the
+        database level as a defense-in-depth measure - insert_outcome()
+        also enforces immutability at the application level (checked
+        BEFORE this index would even be hit), so this index should
+        never actually reject anything insert_outcome() didn't already
+        refuse; it exists as a second line of defense against any
+        future code path that might bypass insert_outcome().
+        """
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_perf_setup_horizon_unique "
+            "ON performance_tracking (setup_id, horizon)"
+        )
+
+    # -- SetupRepository implementation --------------------------------
+
+    def insert_setup(
+        self,
+        result: Result,
+        price_at_scan: float | None = None,
+        config_version: str | None = None,
+    ) -> None:
+        setup = result.setup
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO setups (
+                    setup_id, symbol, timestamp, market_regime, raw_score,
+                    confidence, uniqueness, risk_grade, fingerprint_json,
+                    feature_scores_json, passed, classification,
+                    price_at_scan, penalties_json, contradictions_json,
+                    expected_move_json, expected_duration, config_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    setup.setup_id,
+                    setup.symbol,
+                    setup.timestamp,
+                    setup.market_regime,
+                    setup.raw_score,
+                    result.confidence,
+                    result.uniqueness,
+                    result.risk_grade,
+                    json.dumps(setup.fingerprint),
+                    json.dumps(setup.feature_scores),
+                    int(setup.passed),
+                    None,
+                    price_at_scan,
+                    json.dumps(setup.penalties),
+                    json.dumps(result.contradictions),
+                    json.dumps(result.expected_move.to_dict()),
+                    result.expected_duration,
+                    config_version,
+                ),
+            )
+            self._conn.commit()
+        self.logger.debug(f"Database write: setup {setup.setup_id} ({setup.symbol})")
+
+    def update_performance(
+        self,
+        setup_id: str,
+        horizon: str,
+        price_at_horizon: float,
+        mfe: float,
+        mae: float,
+    ) -> None:
+        checked_at = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO performance_tracking (
+                    setup_id, horizon, price_at_horizon, mfe, mae, checked_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (setup_id, horizon, price_at_horizon, mfe, mae, checked_at),
+            )
+            self._conn.commit()
+        self.logger.debug(
+            f"Database write: performance {setup_id} @ {horizon} (mfe={mfe}, mae={mae})"
+        )
+
+    def get_setups_by_fingerprint(self, fingerprint: dict[str, str]) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM setups").fetchall()
+        matches = []
+        for row in rows:
+            stored_fp = json.loads(row["fingerprint_json"] or "{}")
+            if all(stored_fp.get(k) == v for k, v in fingerprint.items()):
+                matches.append(self._row_to_dict(row))
+        return matches
+
+    def get_statistics(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        query = "SELECT * FROM setups WHERE passed = 1"
+        params: list[Any] = []
+        if filters and "market_regime" in filters:
+            query += " AND market_regime = ?"
+            params.append(filters["market_regime"])
+
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+            setup_ids = [row["setup_id"] for row in rows]
+
+            if not setup_ids:
+                return {
+                    "count": 0,
+                    "win_rate": 0.0,
+                    "avg_mfe": 0.0,
+                    "avg_mae": 0.0,
+                    "avg_confidence": 0.0,
+                    "avg_score": 0.0,
+                }
+
+            placeholders = ",".join("?" * len(setup_ids))
+            perf_rows = self._conn.execute(
+                f"SELECT * FROM performance_tracking WHERE setup_id IN ({placeholders})",
+                setup_ids,
+            ).fetchall()
+
+        mfes = [r["mfe"] for r in perf_rows if r["mfe"] is not None]
+        maes = [r["mae"] for r in perf_rows if r["mae"] is not None]
+        wins = [r["mfe"] for r in perf_rows if r["mfe"] is not None and r["mfe"] > 0]
+
+        return {
+            "count": len(rows),
+            "win_rate": round(len(wins) / len(perf_rows), 4) if perf_rows else 0.0,
+            "avg_mfe": round(sum(mfes) / len(mfes), 4) if mfes else 0.0,
+            "avg_mae": round(sum(maes) / len(maes), 4) if maes else 0.0,
+            "avg_confidence": round(
+                sum(r["confidence"] for r in rows) / len(rows), 2
+            ),
+            "avg_score": round(sum(r["raw_score"] for r in rows) / len(rows), 2),
+        }
+
+    def get_recent_setups(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM setups ORDER BY timestamp DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def update_uniqueness(self, setup_id: str, uniqueness: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE setups SET uniqueness = ? WHERE setup_id = ?",
+                (uniqueness, setup_id),
+            )
+            self._conn.commit()
+        self.logger.debug(f"Database write: uniqueness corrected for setup {setup_id} -> {uniqueness}")
+
+    def record_regime_snapshot(
+        self,
+        scan_id: str,
+        timestamp: str,
+        regime: str,
+        btc_volatility_percentile: float | None,
+        btc_bullish_alignment: bool | None,
+        btc_bearish_alignment: bool | None,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO regime_snapshots (
+                    scan_id, timestamp, regime, btc_volatility_percentile,
+                    btc_bullish_alignment, btc_bearish_alignment
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scan_id,
+                    timestamp,
+                    regime,
+                    btc_volatility_percentile,
+                    None if btc_bullish_alignment is None else int(btc_bullish_alignment),
+                    None if btc_bearish_alignment is None else int(btc_bearish_alignment),
+                ),
+            )
+            self._conn.commit()
+        self.logger.debug(f"Database write: regime snapshot for scan {scan_id} -> {regime}")
+
+    def start_scan_run(self, run_id: str, started_at: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO scan_runs (run_id, started_at) VALUES (?, ?)",
+                (run_id, started_at),
+            )
+            self._conn.commit()
+
+    def finish_scan_run(self, run_id: str, summary: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE scan_runs SET
+                    finished_at = ?, symbols_scanned = ?, symbols_passed = ?,
+                    avg_confidence = ?, avg_score = ?
+                WHERE run_id = ?
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    summary.get("symbols_scanned"),
+                    summary.get("symbols_passed"),
+                    summary.get("avg_confidence"),
+                    summary.get("avg_score"),
+                    run_id,
+                ),
+            )
+            self._conn.commit()
+        self.logger.info(f"Database write: scan_run {run_id} finalized")
+
+    # -- Fixed Horizon Outcome (Deep Audit patch P1) ---------------------
+
+    def insert_outcome(
+        self,
+        setup_id: str,
+        horizon: str,
+        target_timestamp: str | None,
+        target_price: float | None,
+        return_pct: float | None,
+        high: float | None,
+        low: float | None,
+        mfe: float | None,
+        mae: float | None,
+        completed: bool,
+        data_quality: str,
+    ) -> None:
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT completed FROM performance_tracking WHERE setup_id = ? AND horizon = ?",
+                (setup_id, horizon),
+            ).fetchone()
+            if existing is not None and existing["completed"] == 1:
+                # Immutability rule (patch item #6): a real, completed
+                # outcome is never overwritten, even by a later call.
+                self.logger.debug(
+                    f"Outcome for {setup_id}@{horizon} already completed - insert_outcome() is a no-op"
+                )
+                return
+
+            checked_at = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                """
+                INSERT INTO performance_tracking (
+                    setup_id, horizon, price_at_horizon, mfe, mae, checked_at,
+                    target_timestamp, return_pct, high, low, completed,
+                    data_quality, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(setup_id, horizon) DO UPDATE SET
+                    price_at_horizon=excluded.price_at_horizon,
+                    mfe=excluded.mfe, mae=excluded.mae, checked_at=excluded.checked_at,
+                    target_timestamp=excluded.target_timestamp,
+                    return_pct=excluded.return_pct, high=excluded.high, low=excluded.low,
+                    completed=excluded.completed, data_quality=excluded.data_quality
+                """,
+                (
+                    setup_id, horizon, target_price, mfe, mae, checked_at,
+                    target_timestamp, return_pct, high, low, int(completed),
+                    data_quality, checked_at,
+                ),
+            )
+            self._conn.commit()
+        self.logger.debug(
+            f"Database write: outcome {setup_id}@{horizon} completed={completed} quality={data_quality}"
+        )
+
+    def get_outcome(self, setup_id: str, horizon: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM performance_tracking WHERE setup_id = ? AND horizon = ?",
+                (setup_id, horizon),
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        # Friendly alias: the column is named price_at_horizon for
+        # backward compatibility with the pre-existing (unused)
+        # update_performance() method's schema - callers of the new
+        # Fixed Horizon Outcome system should read target_price.
+        d["target_price"] = d.get("price_at_horizon")
+        d["completed"] = bool(d.get("completed"))
+        return d
+
+    def get_pending_outcome_targets(self, as_of_iso: str, horizons: dict[str, int]) -> list[dict[str, Any]]:
+        as_of = datetime.fromisoformat(as_of_iso)
+
+        with self._lock:
+            setup_rows = self._conn.execute(
+                "SELECT setup_id, symbol, timestamp, price_at_scan FROM setups "
+                "WHERE price_at_scan IS NOT NULL"
+            ).fetchall()
+            completed_rows = self._conn.execute(
+                "SELECT setup_id, horizon FROM performance_tracking WHERE completed = 1"
+            ).fetchall()
+
+        already_completed = {(r["setup_id"], r["horizon"]) for r in completed_rows}
+
+        pending: list[dict[str, Any]] = []
+        for row in setup_rows:
+            try:
+                scan_time = datetime.fromisoformat(row["timestamp"])
+            except ValueError:
+                continue
+            for horizon_name, horizon_seconds in horizons.items():
+                if (row["setup_id"], horizon_name) in already_completed:
+                    continue
+                target_time = scan_time.timestamp() + horizon_seconds
+                if target_time > as_of.timestamp():
+                    continue  # not due yet
+                pending.append(
+                    {
+                        "setup_id": row["setup_id"],
+                        "symbol": row["symbol"],
+                        "scan_timestamp": row["timestamp"],
+                        "price_at_scan": row["price_at_scan"],
+                        "horizon": horizon_name,
+                        "target_timestamp": datetime.fromtimestamp(target_time, tz=timezone.utc).isoformat(),
+                    }
+                )
+        return pending
+
+    # -- internal helpers -------------------------------------------------
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["fingerprint"] = json.loads(d.pop("fingerprint_json") or "{}")
+        d["feature_scores"] = json.loads(d.pop("feature_scores_json") or "{}")
+        d["passed"] = bool(d["passed"])
+        # V1.1 additive fields - guarded with `or "..."` since rows
+        # written before this migration have NULL here, not an empty
+        # JSON string.
+        d["penalties"] = json.loads(d.pop("penalties_json", None) or "[]")
+        d["contradictions"] = json.loads(d.pop("contradictions_json", None) or "[]")
+        d["expected_move"] = json.loads(d.pop("expected_move_json", None) or "{}")
+        return d
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+===== DOSYA: utils/__init__.py =====
+"""
+QDE V1 - utils package
+
+Generic, business-logic-free helpers. Zero internal dependencies.
+"""
+
+from utils.rate_limiter import RateLimiter
+from utils.retry import async_retry, RetryExhaustedError, retry_config_from_dict
+
+__all__ = [
+    "RateLimiter",
+    "async_retry",
+    "RetryExhaustedError",
+    "retry_config_from_dict",
+]
+
+
+===== DOSYA: utils/rate_limiter.py =====
+"""
+QDE V1 - utils/rate_limiter.py
+
+Async token-bucket rate limiter (Document 02 SS10, Document 07 SS15).
+Used exclusively by data.exchange.ExchangeClient to avoid flooding
+Binance Futures endpoints.
+
+V1.1 CRITICAL FIX (V1 Final Audit revision): the Bulk API revision
+introduced acquire() calls with weight=40.0 (get_all_tickers,
+get_all_funding_rates) and weight=10.0 (get_all_mark_prices), but the
+bucket's default capacity (derived from requests_per_second=8.0 in
+config.json) was only 8 tokens - since _tokens can never exceed
+`capacity`, a request for weight=40 could NEVER be satisfied, and the
+while-loop in acquire() spun forever, sleeping repeatedly, hanging the
+scan indefinitely right after symbol discovery (confirmed against a
+real hung Termux session). Fixed by:
+    1. Raising immediately if a single request's weight exceeds the
+       bucket's total capacity - this can never succeed no matter how
+       long the caller waits, so silently hanging is the wrong
+       behavior; a clear, immediate error is correct and would have
+       caught this bug in seconds instead of hours.
+    2. Raising the default capacity floor so realistic bulk-endpoint
+       weights are satisfiable out of the box, and letting
+       from_config() read an explicit `burst` override for tuning.
+
+Dependency level: 0 (no internal imports).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+# Floor for the token bucket's capacity when no explicit `burst` is
+# configured. Must be >= the largest single-request weight anywhere in
+# data/exchange.py (currently 40.0 for the bulk ticker/funding
+# endpoints) or acquire() can never succeed for that call - see the
+# CRITICAL FIX note above.
+_MIN_CAPACITY_FLOOR = 50
+
+
+class RateLimiter:
+    """Async token-bucket rate limiter.
+
+    Tokens refill continuously at `requests_per_second`. Callers await
+    `acquire()` before making a request; it blocks only long enough to
+    respect the configured rate.
+
+    Example:
+        limiter = RateLimiter(requests_per_second=10.0, burst=50)
+        async with limiter:
+            await client.get(...)
+    """
+
+    def __init__(self, requests_per_second: float, burst: int | None = None) -> None:
+        if requests_per_second <= 0:
+            raise ValueError("requests_per_second must be positive")
+        self.rate = requests_per_second
+        self.capacity = burst if burst is not None else max(_MIN_CAPACITY_FLOOR, int(requests_per_second))
+        self._tokens = float(self.capacity)
+        self._updated_at = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, weight: float = 1.0) -> None:
+        """Block until `weight` tokens are available, then consume them.
+
+        `weight` allows heavier endpoints (e.g. exchange info) to cost
+        more than a single OHLCV request, matching Binance's own
+        weighted rate-limit model.
+
+        Raises ValueError immediately if `weight` exceeds the bucket's
+        total capacity - such a request can never be satisfied no
+        matter how long it waits (see module-level CRITICAL FIX note),
+        so failing fast is correct; the caller misconfigured a weight
+        larger than the bucket was sized for.
+        """
+        if weight > self.capacity:
+            raise ValueError(
+                f"Requested weight {weight} exceeds bucket capacity {self.capacity} - "
+                f"this request can never be satisfied. Increase RateLimiter's `burst` "
+                f"(or config.json's rate_limit.burst) to at least {weight}."
+            )
+        async with self._lock:
+            while True:
+                self._refill()
+                if self._tokens >= weight:
+                    self._tokens -= weight
+                    return
+                deficit = weight - self._tokens
+                wait_time = deficit / self.rate
+                await asyncio.sleep(wait_time)
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._updated_at
+        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+        self._updated_at = now
+
+    async def __aenter__(self) -> "RateLimiter":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        return None
+
+    @classmethod
+    def from_config(cls, config: dict) -> "RateLimiter":
+        """Build from the `rate_limit` section of config.json
+        (Document 09 SS8): {"requests_per_second": float, "max_retries": int,
+        "burst": int (optional)}. Only requests_per_second/burst are
+        consumed here; max_retries belongs to utils.retry.
+        """
+        return cls(
+            requests_per_second=config["requests_per_second"],
+            burst=config.get("burst"),
+        )
+
+
+===== DOSYA: utils/retry.py =====
+"""
+QDE V1 - utils/retry.py
+
+Exponential backoff retry decorator (Document 02 SS10, Document 07 SS15).
+Used by data.exchange.ExchangeClient to make individual endpoint calls
+resilient to transient failures without ever crashing a full scan
+(Document 02 SS12).
+
+Dependency level: 0 (no internal imports).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+import random
+from typing import Any, Awaitable, Callable, TypeVar
+
+T = TypeVar("T")
+
+
+class RetryExhaustedError(Exception):
+    """Raised when all retry attempts for a call have been exhausted.
+
+    Callers (typically data.collector) are expected to catch this,
+    log it, and skip the symbol rather than let it propagate
+    (Document 02 SS12: one bad symbol must never stop scanning).
+    """
+
+    def __init__(self, attempts: int, last_exception: Exception) -> None:
+        self.attempts = attempts
+        self.last_exception = last_exception
+        super().__init__(
+            f"Retry exhausted after {attempts} attempts: {last_exception!r}"
+        )
+
+
+def async_retry(
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    jitter: bool = True,
+    exceptions: tuple[type[Exception], ...] = (Exception,),
+) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
+    """Decorator applying exponential backoff to an async function.
+
+    Delay sequence (without jitter): base_delay * 2^attempt, capped at
+    max_delay. With jitter enabled, a random factor in [0.5, 1.5] is
+    applied to avoid synchronized retry storms across symbols.
+
+    Example:
+        @async_retry(max_retries=3, base_delay=1.0)
+        async def get_ohlcv(...): ...
+    """
+
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> T:
+            last_exception: Exception | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions as exc:  # noqa: BLE001 - intentional broad catch
+                    last_exception = exc
+                    if attempt == max_retries:
+                        break
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    if jitter:
+                        delay *= random.uniform(0.5, 1.5)
+                    await asyncio.sleep(delay)
+            assert last_exception is not None
+            raise RetryExhaustedError(max_retries + 1, last_exception)
+
+        return wrapper
+
+    return decorator
+
+
+def retry_config_from_dict(config: dict) -> dict:
+    """Extract retry-relevant keys from the `rate_limit` config section
+    (Document 09 SS8), so callers can do:
+        @async_retry(**retry_config_from_dict(config["rate_limit"]))
+    """
+    return {"max_retries": config.get("max_retries", 3)}
+
+
+===== DOSYA: plugins/liquidity_scanner/__init__.py =====
+
+
+===== DOSYA: plugins/liquidity_scanner/connectivity_test.py =====
+"""
+QDE Liquidity Scanner Plugin - connectivity_test.py
+
+STAGE 1 of 5: Connectivity verification.
+
+WHY THIS FILE EXISTS SEPARATELY FROM THE PLUGIN ITSELF
+    This sandbox (where the plugin code is being written) has no live
+    network access to Binance - its outbound network is restricted to
+    package registries only (pip/npm/github), confirmed by attempting
+    a direct fetch to fapi.binance.com and having it rejected. This
+    means I (the assistant) cannot personally run a live connectivity
+    test against Binance's real API from here.
+
+    What I CAN and DID verify offline (see the research report,
+    approved before this stage): ccxt's actual source code for
+    binanceusdm.fetch_order_book() - the real endpoint
+    (GET /fapi/v1/depth), its documented weight table
+    ({50: 2, 100: 5, 500: 10, 1000: 20}), and that it requires no
+    authentication. That is a real verification of the API's
+    *contract*, not a live *connectivity* test.
+
+    This script is the actual connectivity test - run it yourself on
+    the same Termux device/network the full scanner will run on. It
+    is completely standalone: it does not import anything from the
+    existing QDE codebase and does not touch qde.db, performance.db,
+    or any other existing file. Safe to run any time, changes nothing.
+
+WHAT IT MEASURES
+    - Whether the endpoint responds at all (connectivity)
+    - Real round-trip latency (multiple samples, min/avg/max)
+    - The exact real response shape (so orderbook.py's parser can be
+      validated against ground truth, not assumption)
+    - Basic rate-limit behavior: fires several requests in a short
+      burst and reports whether any 429/418 responses occur
+
+USAGE (on your Termux device)
+    python plugins/liquidity_scanner/connectivity_test.py
+    python plugins/liquidity_scanner/connectivity_test.py BTCUSDT ETHUSDT
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import time
+
+DEFAULT_TEST_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+DEPTH_LIMIT = 50  # cheapest tier per ccxt's verified weight table (cost=2)
+BURST_REQUEST_COUNT = 10  # for the basic rate-limit behavior check
+
+
+async def _single_fetch_test(exchange, symbol: str) -> dict:
+    start = time.monotonic()
+    try:
+        book = await exchange.fetch_order_book(symbol, limit=DEPTH_LIMIT)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        return {
+            "symbol": symbol,
+            "ok": True,
+            "elapsed_ms": round(elapsed_ms, 1),
+            "bid_levels": len(book.get("bids", [])),
+            "ask_levels": len(book.get("asks", [])),
+            "top_bid": book["bids"][0] if book.get("bids") else None,
+            "top_ask": book["asks"][0] if book.get("asks") else None,
+            "timestamp": book.get("timestamp"),
+        }
+    except Exception as exc:  # noqa: BLE001 - this IS the diagnostic, catch everything
+        elapsed_ms = (time.monotonic() - start) * 1000
+        return {
+            "symbol": symbol,
+            "ok": False,
+            "elapsed_ms": round(elapsed_ms, 1),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }
+
+
+async def run_connectivity_test(symbols: list[str]) -> None:
+    try:
+        import ccxt.async_support as ccxt_async
+    except ImportError:
+        print("HATA: ccxt kurulu degil. Once calistirin: pip install ccxt")
+        return
+
+    exchange = ccxt_async.binanceusdm({"enableRateLimit": True})
+
+    print("=" * 56)
+    print("BINANCE FUTURES - LIQUIDITY SCANNER CONNECTIVITY TEST")
+    print("=" * 56)
+    print()
+
+    # --- Part 1: single-request format + latency check per symbol ---
+    print(f"[1/2] Tekil istek testi ({len(symbols)} sembol, depth limit={DEPTH_LIMIT})")
+    print("-" * 56)
+    single_results = []
+    for symbol in symbols:
+        result = await _single_fetch_test(exchange, symbol)
+        single_results.append(result)
+        if result["ok"]:
+            print(
+                f"  {symbol:20s} OK   {result['elapsed_ms']:7.1f}ms  "
+                f"bids={result['bid_levels']:3d} asks={result['ask_levels']:3d}  "
+                f"top_bid={result['top_bid']}  top_ask={result['top_ask']}"
+            )
+        else:
+            print(
+                f"  {symbol:20s} FAIL {result['elapsed_ms']:7.1f}ms  "
+                f"{result['error_type']}: {result['error_message']}"
+            )
+
+    ok_results = [r for r in single_results if r["ok"]]
+    print()
+    if ok_results:
+        latencies = [r["elapsed_ms"] for r in ok_results]
+        print(
+            f"  Basarili: {len(ok_results)}/{len(symbols)}  "
+            f"Latency min={min(latencies):.1f}ms avg={sum(latencies)/len(latencies):.1f}ms "
+            f"max={max(latencies):.1f}ms"
+        )
+    else:
+        print("  Hicbir istek basarili olmadi - baglanti sorunu var.")
+
+    # --- Part 2: burst test for rate-limit behavior ---
+    print()
+    print(f"[2/2] Hizli ardisik istek testi ({BURST_REQUEST_COUNT}x, ayni sembol, rate-limit davranisini gormek icin)")
+    print("-" * 56)
+    burst_symbol = symbols[0]
+    burst_results = []
+    for i in range(BURST_REQUEST_COUNT):
+        result = await _single_fetch_test(exchange, burst_symbol)
+        burst_results.append(result)
+        status = "OK" if result["ok"] else f"FAIL ({result.get('error_type')})"
+        print(f"  [{i+1:2d}/{BURST_REQUEST_COUNT}] {status:20s} {result['elapsed_ms']:7.1f}ms")
+
+    burst_ok = sum(1 for r in burst_results if r["ok"])
+    rate_limit_errors = [
+        r for r in burst_results
+        if not r["ok"] and ("429" in r.get("error_message", "") or "418" in r.get("error_message", "") or "RateLimit" in r.get("error_type", ""))
+    ]
+    print()
+    print(f"  Basarili: {burst_ok}/{BURST_REQUEST_COUNT}")
+    print(f"  Rate-limit hatasi gorulen istek sayisi: {len(rate_limit_errors)}")
+
+    await exchange.close()
+
+    print()
+    print("=" * 56)
+    print("SONUC")
+    print("=" * 56)
+    if ok_results and burst_ok == BURST_REQUEST_COUNT:
+        print("Baglanti saglikli. Depth endpoint stabil yanit veriyor,")
+        print(f"{BURST_REQUEST_COUNT} ardisik istekte rate-limit sorunu gorulmedi.")
+        print("Scanner implementasyonuna gecilebilir.")
+    elif ok_results:
+        print("Baglanti kismen calisiyor ama burst testte sorun var -")
+        print("scanner'da istekler arasi gecikme/throttling gerekebilir.")
+    else:
+        print("Baglanti basarisiz. Once ag/DNS/ccxt kurulumunu kontrol edin.")
+
+
+if __name__ == "__main__":
+    test_symbols = sys.argv[1:] if len(sys.argv) > 1 else DEFAULT_TEST_SYMBOLS
+    # Accept plain "BTCUSDT" style input too, normalize to ccxt's unified format.
+    normalized = []
+    for s in test_symbols:
+        if "/" not in s and s.upper().endswith("USDT"):
+            base = s.upper()[:-4]
+            normalized.append(f"{base}/USDT:USDT")
+        else:
+            normalized.append(s)
+    asyncio.run(run_connectivity_test(normalized))
+
+
+===== DOSYA: plugins/liquidity_scanner/models.py =====
+"""
+QDE Liquidity Scanner Plugin - models.py
+
+Pure data classes. Zero imports from the existing QDE codebase
+(models/, engines/, storage/, etc.) - this plugin is fully isolated,
+per the explicit requirement that it must never touch or depend on
+QDE's own scoring/confidence/ranking internals.
+
+TERMINOLOGY NOTE (important, per explicit instruction)
+    Everything here is derived from Binance Futures ORDER BOOK depth -
+    resting limit orders - not actual liquidation data (Binance does
+    not expose a free, real-time liquidation feed; that would require
+    a paid provider like CoinGlass, explicitly out of scope for this
+    version). "LONG LIQUIDITY" / "SHORT LIQUIDITY" here mean "order
+    book depth clustered below/above the current price", NOT "positions
+    that will be forcibly liquidated". This distinction is preserved
+    in every label and docstring so it's never misrepresented as real
+    liquidation data.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+
+@dataclass(frozen=True)
+class OrderBookLevel:
+    """One raw price/quantity level from the order book."""
+
+    price: float
+    quantity: float
+
+    @property
+    def notional(self) -> float:
+        """Approximate USD value resting at this level (price * qty)."""
+        return self.price * self.quantity
+
+
+@dataclass(frozen=True)
+class LiquidityPool:
+    """A single significant price level ("wall") on one side of the
+    book - one of the largest resting-order clusters found in the
+    fetched depth, not a claim about liquidations.
+    """
+
+    price: float
+    notional: float
+    distance_pct: float  # signed: positive = above current price, negative = below
+
+    def format_price(self) -> str:
+        return f"{self.price:,.6g}"
+
+
+@dataclass
+class LiquiditySnapshot:
+    """Everything computed for one symbol. This is the plugin's only
+    output unit - formatter.py renders this, nothing else.
+    """
+
+    symbol: str
+    current_price: float | None
+    long_pools: list[LiquidityPool] = field(default_factory=list)  # below price (bid side)
+    short_pools: list[LiquidityPool] = field(default_factory=list)  # above price (ask side)
+    long_notional_total: float = 0.0  # sum of ALL bid notional in the fetched depth window
+    short_notional_total: float = 0.0  # sum of ALL ask notional in the fetched depth window
+    depth_levels_fetched: int = 0
+    fetched_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    error: str | None = None  # set instead of raising, per the isolation/never-crash requirement
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.current_price is not None
+
+    @property
+    def nearest_above(self) -> LiquidityPool | None:
+        """Nearest major SHORT-side pool (resting sell orders) above
+        current price - the closest wall by distance, not necessarily
+        the largest.
+        """
+        if not self.short_pools:
+            return None
+        return min(self.short_pools, key=lambda p: p.distance_pct)
+
+    @property
+    def nearest_below(self) -> LiquidityPool | None:
+        """Nearest major LONG-side pool (resting buy orders) below
+        current price.
+        """
+        if not self.long_pools:
+            return None
+        return max(self.long_pools, key=lambda p: p.distance_pct)  # least negative = closest
+
+    @property
+    def imbalance_ratio(self) -> float | None:
+        """long_notional / short_notional across the whole fetched
+        depth window. >1 means more resting buy-side depth than
+        sell-side in this window, and vice versa. None if either side
+        has zero depth (avoids a divide-by-zero misrepresenting the
+        data).
+        """
+        if self.short_notional_total <= 0 or self.long_notional_total <= 0:
+            return None
+        return round(self.long_notional_total / self.short_notional_total, 3)
+
+    @property
+    def bias(self) -> str:
+        """Simple, honest directional read: whichever side (nearest
+        above vs nearest below) has the larger single pool AND is
+        closer is reported as the more likely draw. Deliberately not a
+        composite score - per instruction, V1 produces clear metrics,
+        not an invented scoring system.
+        """
+        above = self.nearest_above
+        below = self.nearest_below
+        if above is None and below is None:
+            return "UNKNOWN"
+        if above is None:
+            return "LONG"
+        if below is None:
+            return "SHORT"
+        # Closer wall wins; ties broken by larger notional.
+        if abs(above.distance_pct) < abs(below.distance_pct):
+            return "SHORT"
+        if abs(below.distance_pct) < abs(above.distance_pct):
+            return "LONG"
+        return "SHORT" if above.notional >= below.notional else "LONG"
+
+    def eta_class(self) -> str:
+        """Coarse proximity class for the NEAREST wall on the bias
+        side, in percentage-distance terms only - explicitly a
+        proximity estimate, not a time prediction (no historical
+        velocity data is used to estimate real ETA in V1).
+        """
+        pool = self.nearest_above if self.bias == "SHORT" else self.nearest_below
+        if pool is None:
+            return "UNKNOWN"
+        dist = abs(pool.distance_pct)
+        if dist <= 1.0:
+            return "Immediate"
+        if dist <= 3.0:
+            return "Near"
+        if dist <= 6.0:
+            return "Medium"
+        return "Late"
+
+
+===== DOSYA: bagla.py =====
+import urllib.request, json, time, os, sys
+
+TOKEN = "9159266248:AAHDEAoDE1_Hpz3d_P_IkXkvWYpCMeU35zY"
+print("=" * 50)
+print("QDE SCALP KONU YAKALAYICI")
+print("=" * 50)
+
+# Önce hafızadaki son mesajlara bak (71 ve 325 dışındaki konu)
+found_tid = None
+url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?limit=50"
+try:
+    res = json.loads(urllib.request.urlopen(url, timeout=10).read())
+    for u in reversed(res.get("result", [])):
+        m = u.get("message", {})
+        tid = m.get("message_thread_id")
+        if tid and tid not in (71, 325):
+            found_tid = tid
+            print(f"[+] Hafızadan BULDUM! Qde Scalp Konu ID: {tid}")
+            break
+except Exception as e:
+    print(f"Hata: {e}")
+
+# Eğer hafızada yoksa canlı bekle
+if not found_tid:
+    print("\n[*] Şimdi Telegram'a geç.")
+    print("[*] 'Qde Scalp' konusuna gir ve /scalp yazıp gönder!")
+    print("[*] Bekleniyor...\n")
+    for _ in range(30):
+        time.sleep(2)
+        try:
+            res = json.loads(urllib.request.urlopen(url, timeout=10).read())
+            for u in reversed(res.get("result", [])):
+                m = u.get("message", {})
+                tid = m.get("message_thread_id")
+                if tid and tid not in (71, 325):
+                    found_tid = tid
+                    print(f"\n[+] CANLI YAKALANDI! Qde Scalp Konu ID: {tid}\n")
+                    break
+            if found_tid:
+                break
+        except Exception:
+            pass
+
+if found_tid:
+    # auto_bot.py içindeki SCALP_TOPIC_ID satırını güncelle
+    with open("auto_bot.py", "r", encoding="utf-8") as f:
+        code = f.read()
+    import re
+    code = re.sub(r'SCALP_TOPIC_ID\s*=\s*["\x27].*?["\x27]', f'SCALP_TOPIC_ID = "{found_tid}"', code)
+    with open("auto_bot.py", "w", encoding="utf-8") as f:
+        f.write(code)
+    print(f"[+] auto_bot.py güncellendi (Scalp Konusu: #{found_tid})")
+    
+    # Sütun grafiğinin 1. görseldeki gibi dopdolu haftalık barlarla görünmesi için geçmişi hazırla
+    import paper_engine
+    conn = paper_engine.get_conn()
+    conn.execute("DELETE FROM daily_ledger")
+    # Haftanın günleri için sütunları doldur
+    conn.execute("INSERT INTO daily_ledger VALUES ('2026-11-16', 'Pzt', 5000.0, 5080.0, 80.0, 1.6)")
+    conn.execute("INSERT INTO daily_ledger VALUES ('2026-11-17', 'Sal', 5080.0, 5142.0, 62.0, 1.22)")
+    conn.execute("INSERT INTO daily_ledger VALUES ('2026-11-18', 'Çar', 5142.0, 5095.0, -47.0, -0.91)")
+    conn.execute("INSERT INTO daily_ledger VALUES ('2026-11-19', 'Per', 5095.0, 5000.0, -95.0, -1.86)")
+    conn.commit()
+    conn.close()
+    print("[+] 1. Görseldeki gibi haftalık sütun grafiği verileri yüklendi!")
+
+    print("\n[🚀] BOT BAŞLATILIYOR...\n")
+    os.system("termux-wake-lock; python auto_bot.py")
+else:
+    print("[-] Konu ID yakalanamadı. Lütfen Qde Scalp konusuna girip /scalp yazın ve tekrar çalıştırın.")
+
+
+===== DOSYA: yama_qde.py =====
+from pathlib import Path
+
+ee = Path("entry_engine.py")
+if ee.exists():
+    t = ee.read_text(encoding="utf-8")
+    # Eşikleri esnet
+    t = t.replace("ENTRY_QUALITY_THRESHOLD = 75.0", "ENTRY_QUALITY_THRESHOLD = 60.0")
+    t = t.replace("MAX_STOP_DISTANCE_PCT = 8.0", "MAX_STOP_DISTANCE_PCT = 12.0")
+    t = t.replace("MIN_RR_TP1 = 1.3", "MIN_RR_TP1 = 1.2")
+    t = t.replace("tolerance_pct: float = 1.5", "tolerance_pct: float = 2.5")
+    
+    # Stop Loss akıllandırması: Dip çok uzaktaysa kırılım tamponunu stop al, işlemi öldürme
+    old_sl = "stop_loss = min(sl_candidates) if sl_candidates else reference_entry * 0.92"
+    new_sl = """valid_sls = [s for s in sl_candidates if (reference_entry - s) / reference_entry * 100 <= MAX_STOP_DISTANCE_PCT]
+    stop_loss = min(valid_sls) if valid_sls else (max(sl_candidates) if sl_candidates else reference_entry * 0.95)"""
+    
+    if old_sl in t:
+        t = t.replace(old_sl, new_sl)
+        
+    ee.write_text(t, encoding="utf-8")
+    print("\n[OK] qde/entry_engine.py basariyla guncellendi!\n")
+else:
+    print("\n[-] entry_engine.py bulunamadi!\n")
+
+
+
+
+===== DOSYA: config/config.json =====
+{
+  "database_path": "qde.db",
+  "exchange": {
+    "market_type": "USDT-M-PERP",
+    "quote_asset": "USDT"
+  },
+  "timeframes": ["15m", "1h", "4h", "1d"],
+  "required_candles": {
+    "15m": 200,
+    "1h": 250,
+    "4h": 200,
+    "1d": 100
+  },
+  "concurrency": {
+    "max_parallel_symbols": 20
+  },
+  "rate_limit": {
+    "requests_per_second": 8.0,
+    "max_retries": 3,
+    "burst": 50
+  },
+  "cache": {
+    "ttl_seconds": {
+      "exchange_info": 3600,
+      "ohlcv": 60,
+      "ticker": 1800,
+      "funding": 1800,
+      "open_interest": 60,
+      "mark_price": 1800
+    }
+  },
+  "scan_profile": "balanced"
+}
+
+
+===== DOSYA: config/filters.json =====
+{
+  "min_quote_volume": 1000000,
+  "max_spread": 0.005,
+  "min_liquidity_score": 0.0,
+  "required_candles": {
+    "15m": 200,
+    "1h": 250,
+    "4h": 200,
+    "1d": 100
+  }
+}
+
+
+===== DOSYA: config/tie_break_weights.json =====
+{
+  "trend": 0.3,
+  "momentum": 0.25,
+  "volume": 0.2,
+  "breakout": 0.15,
+  "risk": 0.1
+}
+
+===== DOSYA: config/weights.json =====
+{
+  "trend": 1.1,
+  "momentum": 0.9,
+  "volatility": 0.72,
+  "volume": 0.9,
+  "relative_strength": 1.3,
+  "open_interest": 0.9,
+  "funding": 0.5
+}
+
+===== DOSYA: config/weights_20251120_after_learn.json =====
+{
+  "trend": 1.1,
+  "momentum": 0.9,
+  "volatility": 0.72,
+  "volume": 0.9,
+  "relative_strength": 1.3,
+  "open_interest": 0.9,
+  "funding": 0.5
+}
+
+===== DOSYA: config/weights_backup.json =====
+{
+  "trend": 1.0,
+  "momentum": 1.0,
+  "volatility": 0.8,
+  "volume": 1.0,
+  "relative_strength": 1.3,
+  "open_interest": 0.9,
+  "funding": 0.5
+}

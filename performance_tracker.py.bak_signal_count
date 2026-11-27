@@ -1,0 +1,418 @@
+"""
+QDE V1.1 - performance_tracker.py
+
+QDE Performance Tracker (standalone plugin module).
+
+RULES THIS MODULE FOLLOWS (per explicit request):
+    - Never modifies the scanning engine, Hard Filter, Scoring Engine,
+      Confidence Engine, or terminal scan output in any way.
+    - Never triggers a new 500+ symbol scan.
+    - Uses its own separate SQLite database (performance.db) - does not
+      touch qde.db or the SetupRepository/Setup/Result schema at all.
+    - Only ever fetches live prices for the small set of symbols that
+      already appear in previously recorded Top 15 snapshots.
+
+INTEGRATION POINTS (the only two places this module touches the rest
+of the codebase):
+    1. main.py calls `record_top15(results, pipeline.exchange)` once,
+       right after a scan finishes - wrapped in try/except so a
+       tracker failure can never break the actual scan.
+    2. A tiny CLI entrypoint here (`python performance_tracker.py
+       <amount> <gün|hafta|ay>`) so a `rapor` shell alias can generate
+       reports without running main.py at all.
+
+Usage:
+    # Recording (called automatically by main.py after every scan):
+    await record_top15(results, exchange)
+
+    # Reporting (run directly, or via a shell alias - see bottom of file):
+    python performance_tracker.py 1 gün
+    python performance_tracker.py 3 gün
+    python performance_tracker.py 1 hafta
+    python performance_tracker.py 1 ay
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sqlite3
+import sys
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+_DB_PATH = Path(__file__).resolve().parent / "performance.db"
+_TOP_N = 15
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS top15_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id TEXT NOT NULL,
+    scan_timestamp TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    score REAL,
+    confidence REAL,
+    grade TEXT,
+    category TEXT,
+    price_at_scan REAL,
+    setup_id TEXT,
+    feature_scores_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_top15_timestamp ON top15_snapshots (scan_timestamp);
+CREATE INDEX IF NOT EXISTS idx_top15_symbol ON top15_snapshots (symbol);
+"""
+
+_UNIT_DAYS = {"gün": 1, "gun": 1, "hafta": 7, "ay": 30}
+
+
+def _ensure_v1_1_columns(conn: sqlite3.Connection) -> None:
+    """Additive migration for pre-existing performance.db files created
+    before setup_id/feature_scores_json existed. Safe to call every
+    time - checks first, never errors on an already-migrated database.
+    Needed by learning_engine.py, which correlates each indicator's
+    individual contribution (feature_scores) with realized outcome -
+    something the original schema had no way to capture.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(top15_snapshots)")}
+    if "setup_id" not in existing:
+        conn.execute("ALTER TABLE top15_snapshots ADD COLUMN setup_id TEXT")
+    if "feature_scores_json" not in existing:
+        conn.execute("ALTER TABLE top15_snapshots ADD COLUMN feature_scores_json TEXT")
+    conn.commit()
+
+
+# ---------------------------------------------------------------------
+# Recording (called from main.py after a scan finishes)
+# ---------------------------------------------------------------------
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(_SCHEMA)
+    _ensure_v1_1_columns(conn)
+    return conn
+
+
+async def record_top15(results: list, exchange: Any, db_path: Path = _DB_PATH) -> None:
+    """Record the Top 15 passed signals from a completed scan.
+
+    `results` is the same ranked list[Result] main.py already produces
+    and prints - this function does not re-rank or re-filter anything,
+    it just takes the first 15 already-passed entries, exactly what
+    the terminal's "Top Signals" section shows.
+
+    `exchange` is the pipeline's already-open ExchangeClient - reused
+    here so this function opens zero new network connections; it only
+    issues up to 15 extra ticker requests, once, after the scan.
+    """
+    passed = [r for r in results if r.setup.passed]
+    top15 = passed[:_TOP_N]
+    if not top15:
+        return
+
+    scan_id = str(uuid.uuid4())
+    scan_timestamp = datetime.now(timezone.utc).isoformat()
+
+    rows = []
+    for rank, result in enumerate(top15, start=1):
+        try:
+            ticker = await exchange.get_ticker(result.symbol)
+            price = ticker.get("last")
+        except Exception:
+            price = None
+
+        # Import kept local and optional: category() is a small, pure
+        # labeling helper in output.terminal (Institutional Grade / High
+        # Probability / etc.) - reused here only for display consistency
+        # with what was actually printed. If unavailable for any reason,
+        # recording still proceeds without it rather than failing.
+        try:
+            from output.terminal import category_label
+            category = category_label(result)
+        except Exception:
+            category = ""
+
+        rows.append(
+            (
+                scan_id,
+                scan_timestamp,
+                rank,
+                result.symbol,
+                result.score,
+                result.confidence,
+                result.risk_grade,
+                category,
+                price,
+                result.setup.setup_id,
+                json.dumps(result.setup.feature_scores),
+            )
+        )
+
+    conn = _connect()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO top15_snapshots (
+                scan_id, scan_timestamp, rank, symbol, score,
+                confidence, grade, category, price_at_scan,
+                setup_id, feature_scores_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------
+# Reporting (CLI entrypoint - `rapor 1 hafta` etc.)
+# ---------------------------------------------------------------------
+
+@dataclass
+class PeriodSpec:
+    start: datetime
+    label: str
+
+
+def parse_period(tokens: list[str]) -> PeriodSpec:
+    """Parses ["1","gün"] / ["3","gün"] / ["1","hafta"] / ["1","ay"]
+    (an optional leading "rapor" token is ignored so both
+    `rapor 1 hafta` and `1 hafta` work).
+    """
+    cleaned = [t.lower() for t in tokens if t.lower() != "rapor"]
+    if len(cleaned) < 2:
+        raise ValueError("Kullanım: rapor <sayı> <gün|hafta|ay>  (örn: rapor 1 hafta)")
+
+    try:
+        amount = int(cleaned[0])
+    except ValueError:
+        raise ValueError(f"Geçersiz sayı: '{cleaned[0]}'")
+
+    unit = cleaned[1]
+    if unit not in _UNIT_DAYS:
+        raise ValueError(f"Geçersiz birim: '{unit}' (gün, hafta veya ay olmalı)")
+
+    days = amount * _UNIT_DAYS[unit]
+    unit_label = {"gün": "Gün", "gun": "Gün", "hafta": "Hafta", "ay": "Ay"}[unit]
+    label = f"Son {amount} {unit_label}"
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    return PeriodSpec(start=start, label=label)
+
+
+def fetch_snapshots(period_start: datetime, db_path: Path = _DB_PATH) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM top15_snapshots WHERE scan_timestamp >= ? ORDER BY scan_timestamp, rank",
+            (period_start.isoformat(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+async def fetch_current_prices(symbols: list[str]) -> dict[str, float | None]:
+    """Fetches the current price for exactly these symbols - never a
+    fresh 530-symbol scan. Opens and closes its own short-lived
+    ExchangeClient since the CLI report runs independently of main.py.
+
+    Prints lightweight progress every 20 symbols - after weeks of
+    accumulated Top15 history (performance_tracker's own db), this
+    list can grow into the hundreds of unique symbols, and fetching
+    them one by one over the real network can take a noticeable amount
+    of time with zero terminal output otherwise - which looks
+    indistinguishable from a hang. This is display-only; it does not
+    change what's fetched or how.
+    """
+    from data.exchange import ExchangeClient
+
+    exchange = ExchangeClient(rate_limit_config={"requests_per_second": 8.0, "max_retries": 3})
+    prices: dict[str, float | None] = {}
+    total = len(symbols)
+    if total > 20:
+        print(f"Guncel fiyatlar cekiliyor: {total} sembol...")
+    try:
+        for i, symbol in enumerate(symbols, start=1):
+            try:
+                ticker = await exchange.get_ticker(symbol)
+                prices[symbol] = ticker.get("last")
+            except Exception:
+                prices[symbol] = None
+            if total > 20 and i % 20 == 0:
+                print(f"  {i}/{total} sembol tamamlandi...")
+    finally:
+        await exchange.close()
+    if total > 20:
+        print(f"Fiyat cekme tamamlandi: {total}/{total}")
+    return prices
+
+
+def pct_change(entry_price: float | None, current_price: float | None) -> float | None:
+    """Public: shared with learning_engine.py so both modules compute
+    returns identically. Same logic performance_tracker's own report
+    already used privately.
+    """
+    if not entry_price or current_price is None:
+        return None
+    return round((current_price - entry_price) / entry_price * 100, 4)
+
+
+# Backward-compatible private alias (kept in case anything imported the
+# old private name directly).
+_pct_change = pct_change
+
+
+def build_report(snapshots: list[dict], current_prices: dict[str, float | None], period_label: str) -> str:
+    lines: list[str] = []
+
+    # Enrich snapshots with current price + pct change
+    for s in snapshots:
+        s["current_price"] = current_prices.get(s["symbol"])
+        s["pct_change"] = _pct_change(s["price_at_scan"], s["current_price"])
+
+    scan_ids = sorted(set(s["scan_id"] for s in snapshots), key=lambda sid: next(s["scan_timestamp"] for s in snapshots if s["scan_id"] == sid))
+    total_scans = len(scan_ids)
+    total_coins = len(snapshots)
+    with_change = [s for s in snapshots if s["pct_change"] is not None]
+    winners = [s for s in with_change if s["pct_change"] > 0]
+    losers = [s for s in with_change if s["pct_change"] <= 0]
+    win_rate = round(len(winners) / len(with_change) * 100, 1) if with_change else 0.0
+    avg_return = round(sum(s["pct_change"] for s in with_change) / len(with_change), 2) if with_change else 0.0
+    best = max(with_change, key=lambda s: s["pct_change"], default=None)
+    worst = min(with_change, key=lambda s: s["pct_change"], default=None)
+
+    # ---- Header summary ----
+    lines.append("=" * 44)
+    lines.append("QDE PERFORMANCE REPORT")
+    lines.append("=" * 44)
+    lines.append("")
+    lines.append(f"Dönem: {period_label}")
+    lines.append("")
+    lines.append(f"Toplam Tarama: {total_scans}")
+    lines.append(f"Toplam Top15 Listesi: {total_scans}")
+    lines.append(f"Toplam Kaydedilen Coin: {total_coins}")
+    lines.append(f"Kazanan Coin: {len(winners)}")
+    lines.append(f"Kaybeden Coin: {len(losers)}")
+    lines.append(f"Başarı Oranı: %{win_rate}")
+    lines.append(f"Ortalama Getiri: {'+' if avg_return >= 0 else ''}{avg_return}%")
+    if best:
+        lines.append(f"En Çok Kazandıran: {best['symbol']} {'+' if best['pct_change']>=0 else ''}{best['pct_change']}%")
+    if worst:
+        lines.append(f"En Çok Kaybettiren: {worst['symbol']} {'+' if worst['pct_change']>=0 else ''}{worst['pct_change']}%")
+    lines.append("=" * 44)
+    lines.append("")
+
+    # ---- Per-scan list detail ----
+    lines.append("LİSTE DETAYI")
+    lines.append("-" * 44)
+    for scan_id in scan_ids:
+        scan_rows = [s for s in snapshots if s["scan_id"] == scan_id]
+        scan_rows.sort(key=lambda s: s["rank"])
+        ts = datetime.fromisoformat(scan_rows[0]["scan_timestamp"])
+        lines.append("")
+        lines.append(f"Tarama Tarihi: {ts.strftime('%d.%m.%Y %H:%M')}")
+        for s in scan_rows:
+            start_p = s["price_at_scan"]
+            cur_p = s["current_price"]
+            pct = s["pct_change"]
+            start_str = f"{start_p:.6g}" if start_p is not None else "N/A"
+            cur_str = f"{cur_p:.6g}" if cur_p is not None else "N/A"
+            pct_str = f"{'+' if pct >= 0 else ''}{pct}%" if pct is not None else "N/A"
+            lines.append(f"  #{s['rank']:<2} {s['symbol']:<12} {start_str} -> {cur_str}  ({pct_str})")
+    lines.append("")
+    lines.append("=" * 44)
+    lines.append("")
+
+    # ---- Per-coin rank history + summary ----
+    lines.append("COIN BAZLI SIRA GEÇMİŞİ")
+    lines.append("-" * 44)
+    symbols_sorted = sorted(
+        set(s["symbol"] for s in snapshots),
+        key=lambda sym: -sum(1 for s in snapshots if s["symbol"] == sym),
+    )
+    for symbol in symbols_sorted:
+        entries = [s for s in snapshots if s["symbol"] == symbol]
+        entries.sort(key=lambda s: s["scan_timestamp"])
+        lines.append("")
+        lines.append(symbol)
+        for e in entries:
+            ts = datetime.fromisoformat(e["scan_timestamp"])
+            pct = e["pct_change"]
+            pct_str = f"{'+' if pct >= 0 else ''}{pct}%" if pct is not None else "N/A"
+            lines.append(f"  • {ts.strftime('%d.%m.%Y %H:%M')}")
+            lines.append(f"    Top15 Sırası : #{e['rank']}")
+            lines.append(f"    Score        : {e['score']:.0f}" if e["score"] is not None else "    Score        : N/A")
+            lines.append(f"    Güncel Performans : {pct_str}")
+
+        entry_pcts = [e["pct_change"] for e in entries if e["pct_change"] is not None]
+        ranks = [e["rank"] for e in entries]
+        lines.append("")
+        lines.append(f"  Top15'e Giriş Sayısı : {len(entries)}")
+        lines.append(f"  En İyi Sırası         : #{min(ranks)}")
+        lines.append(f"  En Kötü Sırası        : #{max(ranks)}")
+        lines.append(f"  Ortalama Sırası       : #{round(sum(ranks)/len(ranks), 1)}")
+        if entry_pcts:
+            avg_e = round(sum(entry_pcts) / len(entry_pcts), 2)
+            lines.append(f"  Ortalama Getiri       : {'+' if avg_e >= 0 else ''}{avg_e}%")
+        else:
+            lines.append("  Ortalama Getiri       : N/A")
+    lines.append("")
+    lines.append("=" * 44)
+    lines.append("")
+
+    # ---- Rank success analysis (#1..#15) ----
+    lines.append("SIRA BAŞARI ANALİZİ")
+    lines.append("-" * 44)
+    for rank in range(1, _TOP_N + 1):
+        rank_rows = [s for s in with_change if s["rank"] == rank]
+        if not rank_rows:
+            continue
+        pcts = [s["pct_change"] for s in rank_rows]
+        rank_wins = [p for p in pcts if p > 0]
+        rank_win_rate = round(len(rank_wins) / len(pcts) * 100, 1)
+        rank_avg = round(sum(pcts) / len(pcts), 2)
+        lines.append("")
+        lines.append(f"#{rank}")
+        lines.append(f"  Kullanım Sayısı  : {len(pcts)}")
+        lines.append(f"  Ortalama Getiri  : {'+' if rank_avg >= 0 else ''}{rank_avg}%")
+        lines.append(f"  Başarı Oranı     : %{rank_win_rate}")
+        lines.append(f"  En Yüksek Kazanç : {'+' if max(pcts)>=0 else ''}{max(pcts)}%")
+        lines.append(f"  En Büyük Düşüş   : {'+' if min(pcts)>=0 else ''}{min(pcts)}%")
+    lines.append("")
+    lines.append("=" * 44)
+
+    return "\n".join(lines)
+
+
+async def generate_report(tokens: list[str]) -> str:
+    period = parse_period(tokens)
+    snapshots = fetch_snapshots(period.start)
+    if not snapshots:
+        return f"'{period.label}' için kayıtlı Top15 taraması bulunamadı."
+
+    symbols = sorted(set(s["symbol"] for s in snapshots))
+    current_prices = await fetch_current_prices(symbols)
+    return build_report(snapshots, current_prices, period.label)
+
+
+def main() -> None:
+    tokens = sys.argv[1:]
+    if not tokens:
+        print("Kullanım: python performance_tracker.py <sayı> <gün|hafta|ay>")
+        print("Örnek   : python performance_tracker.py 1 hafta")
+        return
+    try:
+        report = asyncio.run(generate_report(tokens))
+    except ValueError as exc:
+        print(f"Hata: {exc}")
+        return
+    print(report)
+
+
+if __name__ == "__main__":
+    main()

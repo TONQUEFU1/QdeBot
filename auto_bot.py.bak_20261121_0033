@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+QDE Çift Yönlü Hibrit Bot: Swing + Simetrik (Long & Short) Scalp Modülü
+"""
+
+import time
+import subprocess
+import sys
+import json
+import os
+import asyncio
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+import paper_engine
+import scalp_engine
+import entry_engine
+
+TELEGRAM_BOT_TOKEN = "9159266248:AAHDEAoDE1_Hpz3d_P_IkXkvWYpCMeU35zY"
+TELEGRAM_CHAT_ID = "-1003992142126"
+PNL_TOPIC_ID = "71"
+KRONOLOJI_TOPIC_ID = "325"
+SCALP_TOPIC_ID = "325"
+
+TARAMA_ARALIGI_DAKIKA = 30
+COOLDOWN_SURESI_SANIYE = 14400
+COOLDOWN_DOSYASI = "sinyal_gecmisi.json"
+MAX_SWING_PUMP_LIMIT = 15.0
+
+for p in [
+    Path("/storage/emulated/0/BreakoutScanner/qde"),
+    Path("/sdcard/BreakoutScanner/qde"),
+    Path.home() / "BreakoutScanner" / "qde",
+    Path.home() / "BreakoutScanner",
+    Path(".")
+]:
+    if (p / "main.py").exists() and (p / "entry_engine.py").exists():
+        os.chdir(p)
+        break
+
+def cooldown_gecmisini_yukle() -> dict:
+    if Path(COOLDOWN_DOSYASI).exists():
+        try:
+            with open(COOLDOWN_DOSYASI, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def cooldown_kaydet(gecmis: dict):
+    try:
+        with open(COOLDOWN_DOSYASI, "w", encoding="utf-8") as f:
+            json.dump(gecmis, f, indent=2)
+    except Exception as e:
+        print(f"[-] Cooldown yazılamadı: {e}")
+
+def parite_temizle(symbol_raw: str) -> str:
+    return symbol_raw.replace(":USDT", "").replace("/USDT", "").replace("#", "").strip().upper()
+
+def cooldown_kontrol(temiz_sembol: str) -> tuple[bool, int]:
+    gecmis = cooldown_gecmisini_yukle()
+    simdi = time.time()
+    if temiz_sembol in gecmis:
+        gecen_sure = simdi - gecmis[temiz_sembol]
+        if gecen_sure < COOLDOWN_SURESI_SANIYE:
+            return False, max(1, int((COOLDOWN_SURESI_SANIYE - gecen_sure) / 60))
+    return True, 0
+
+def parse_signal(cikti: str) -> dict:
+    d = {}
+    is_rr = False
+    for line in cikti.splitlines():
+        line = line.strip()
+        if "Risk/Getiri" in line:
+            is_rr = True
+            continue
+        if ":" in line:
+            k, v = line.split(":", 1)
+            k, v = k.strip(), v.strip()
+            if is_rr:
+                d[f"RR_{k}"] = v
+            else:
+                d[k] = v
+    return d
+
+def format_fiyat(fiyat: float, ref_fiyat_str: str) -> str:
+    try:
+        ondalik = len(ref_fiyat_str.split(".")[1]) if "." in ref_fiyat_str else 4
+    except Exception:
+        ondalik = 4
+    ondalik = max(2, min(ondalik, 8))
+    return f"{fiyat:.{ondalik}f}"
+
+def formatla_vip(cikti: str) -> str:
+    d = parse_signal(cikti)
+    if not d.get("Coin"):
+        return f"<code>{cikti}</code>"
+
+    coin = parite_temizle(d.get("Coin", "BILINMIYOR"))
+    yon = d.get("Yön", "LONG")
+    skor = d.get("QDE Skoru", "").replace("/100", "").strip()
+    guven = d.get("Güven", "").strip()
+    bolge = d.get("Giriş Bölgesi", "").strip()
+    giris_str = d.get("Referans Giriş", "").strip()
+    stop_str = d.get("STOP LOSS", "").strip()
+    kaldirac = d.get("Önerilen Kaldıraç", "2x").strip()
+
+    try:
+        ref_f = float(giris_str)
+        stop_f = float(stop_str)
+        risk = abs(ref_f - stop_f)
+
+        tp1_h = ref_f + (risk * 1.8)
+        tp2_h = ref_f + (risk * 3.0)
+
+        tp1_str = f"{format_fiyat(tp1_h, giris_str)} (1:1.8)"
+        tp2_str = f"{format_fiyat(tp2_h, giris_str)} (1:3.0)"
+    except Exception:
+        tp1_str = f"{d.get('TP1', '')} (1:1.8)"
+        tp2_str = f"{d.get('TP2', '')} (1:3.0)"
+
+    return f"""⚡️ <b>QDE QUANT ALGO — YENİ İŞLEM</b> ⚡️
+
+🪙 <b>Parite:</b> <b>#{coin} / USDT</b>
+📈 <b>Yön:</b> <b>{yon} (ALIŞ) 🟢</b>
+⚙️ <b>Kaldıraç:</b> <b>{kaldirac}</b>
+
+📥 <b>GİRİŞ:</b> <code>{giris_str}</code> <i>({bolge})</i>
+⛔️ <b>STOP:</b> <code>{stop_str}</code>
+
+🎯 <b>TP1:</b> <code>{tp1_str}</code>
+🎯 <b>TP2:</b> <code>{tp2_str}</code>
+
+🛡 <b>Onaylar:</b> Kırılım ✅ | Retest ✅ | Hacim ✅
+📈 <b>Skor:</b> {skor}/100 • Güven: {guven}
+───────────────────────
+<i>QDE Otomatik Karar Motoru</i>"""
+
+def telegram_mesaj_gonder(mesaj: str, topic_id: str = ""):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mesaj, "parse_mode": "HTML"}
+    if topic_id:
+        try:
+            payload["message_thread_id"] = int(topic_id)
+        except Exception:
+            pass
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            pass
+        hedef = f"Konu #{topic_id}" if topic_id else "Ana Grup"
+        print(f"[+] Mesaj gönderildi! ({hedef})")
+    except Exception as e:
+        print(f"[-] Telegram mesaj hatası: {e}")
+
+def telegram_foto_gonder(photo_url: str, caption: str, topic_id: str = ""):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
+    if topic_id:
+        try:
+            payload["message_thread_id"] = int(topic_id)
+        except Exception:
+            pass
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=18) as response:
+            pass
+        print(f"[+] Sütun Grafiği İletildi! 📸")
+    except Exception as e:
+        print(f"[-] Grafik hatası: {e}")
+
+def get_latest_btc_regime() -> str:
+    try:
+        conn = sqlite3.connect("qde.db")
+        r = conn.execute("SELECT regime FROM regime_snapshots ORDER BY timestamp DESC LIMIT 1").fetchone()
+        conn.close()
+        return r[0] if r else "sideways"
+    except Exception:
+        return "sideways"
+
+async def run_dual_scalp_cycle(top_symbols: list[str], btc_regime: str):
+    from data.exchange import ExchangeClient
+    ex = ExchangeClient(rate_limit_config={"requests_per_second": 8.0, "max_retries": 3})
+    try:
+        tickers = await ex.get_all_tickers()
+
+        # 1. Swing Kasalarını Güncelle
+        paper_engine.update_all_with_prices(tickers)
+
+        # 2. Açık Scalp Çıkışlarını Denetle
+        notifications = scalp_engine.check_all_scalp_exits(tickers)
+        for notif in notifications:
+            telegram_mesaj_gonder(notif, topic_id=SCALP_TOPIC_ID)
+
+        # 3. Canlı Arama Durumu
+        l_count = scalp_engine.aktif_scalp_sayisi("LONG")
+        s_count = scalp_engine.aktif_scalp_sayisi("SHORT")
+        print(f"  [Scalp 5m] Aktif Long: {l_count}/1 | Aktif Short: {s_count}/1 | Rejim: {btc_regime}")
+
+        # 4. Long (Top 15) ve Short (En Zayıf 15) Adaylarında Kırılım Ara
+        firsat = await scalp_engine.scan_market_for_scalp(ex, top_symbols, btc_regime, tickers)
+        if firsat:
+            scalp_engine.open_scalp(firsat)
+            yon = firsat["direction"]
+            yon_ikon = "LONG 🟢" if yon == "LONG" else "SHORT 🔴"
+            kart = f"""⚡️ <b>QDE MİKRO SCALP — YENİ İŞLEM</b> ⚡️
+───────────────────────
+🪙 <b>Parite:</b> <b>#{firsat['symbol']} / USDT</b> <i>(5m Kırılım)</i>
+📈 <b>Yön:</b> <b>{yon_ikon}</b> | <b>Kaldıraç:</b> <b>5x</b>
+
+📥 <b>GİRİŞ:</b> <code>{firsat['entry']:.6g}</code>
+🛑 <b>MİKRO STOP:</b> <code>{firsat['stop']:.6g}</code> <i>(-%{firsat['stop_pct']:.2f})</i>
+
+🎯 <b>TP1:</b> <code>{firsat['tp1']:.6g}</code> (1:1.2 R)
+🎯 <b>TP2:</b> <code>{firsat['tp2']:.6g}</code> (1:2.0 R)
+
+💡 <b>Sinyal Nedeni:</b> {firsat['reason']}
+⏱ <b>Zaman Limiti:</b> 35 Dakika <i>(Hacim sönerse kapatılır)</i>
+🛡 <b>Slot:</b> 1 Long / 1 Short Dengeli Mod
+───────────────────────
+<i>QDE Çift Yönlü Scalp Motoru</i>"""
+            telegram_mesaj_gonder(kart, topic_id=SCALP_TOPIC_ID)
+    finally:
+        await ex.close()
+
+def main():
+    print("=" * 54)
+    print("QDE SİMETRİK BOT: TOP 15 LONG & TOP 15 SHORT AKTİF")
+    print(f"Grup: {TELEGRAM_CHAT_ID} | Scalp Konusu: #{SCALP_TOPIC_ID}")
+    print("=" * 54)
+
+    last_day = datetime.now().day
+
+    while True:
+        simdi = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        print(f"\n[{simdi}] 1. Aşama: 500+ Coin Taranıyor...")
+
+        current_day = datetime.now().day
+        if current_day != last_day:
+            paper_engine.record_daily_close()
+            c_url, c_cap = paper_engine.generate_bar_chart_url_and_caption()
+            telegram_foto_gonder(c_url, c_cap, topic_id=KRONOLOJI_TOPIC_ID)
+            last_day = current_day
+
+        try:
+            subprocess.run([sys.executable, "main.py"], timeout=600, check=True)
+            print("[+] Tarama tamamlandı.")
+        except Exception as e:
+            print(f"[-] Tarama hatası: {e}")
+            time.sleep(30)
+            continue
+
+        btc_regime = get_latest_btc_regime()
+        print(f"[*] Piyasa Rejimi: {btc_regime}")
+
+        print(f"[{simdi}] 2. Aşama: Swing & Kasa Yönetimi...")
+        top_symbols = []
+        try:
+            res = subprocess.run([sys.executable, "entry_engine.py"], capture_output=True, text=True, timeout=180)
+            cikti = res.stdout.strip()
+
+            if "QDE LONG SİNYALİ" in cikti:
+                parsed = parse_signal(cikti)
+                coin_temiz = parite_temizle(parsed.get("Coin", ""))
+                izin_var, kalan_dk = cooldown_kontrol(coin_temiz)
+
+                from data.exchange import ExchangeClient
+                async def _check_pump(sym):
+                    ex_p = ExchangeClient(rate_limit_config={"requests_per_second": 8.0, "max_retries": 2})
+                    try:
+                        tk = await ex_p.get_ticker(sym)
+                        return abs(float(tk.get("percentage") or 0.0))
+                    finally:
+                        await ex_p.close()
+
+                change_24h = asyncio.run(_check_pump(parsed.get("Coin", "")))
+                if change_24h >= MAX_SWING_PUMP_LIMIT:
+                    print(f"[ENGEL] #{coin_temiz} 24s %{change_24h:.1f} yükselmiş. Tepeden alım engellendi!")
+                elif izin_var:
+                    vip_kart = formatla_vip(cikti)
+                    telegram_mesaj_gonder(vip_kart)
+                    paper_engine.process_new_signal(parsed)
+                    gecmis = cooldown_gecmisini_yukle()
+                    gecmis[coin_temiz] = time.time()
+                    cooldown_kaydet(gecmis)
+
+            latest_cands = entry_engine.fetch_latest_top15()
+            top_symbols = [c.symbol for c in latest_cands]
+        except Exception as e:
+            print(f"[-] Swing hatası: {e}")
+
+        # 3. Aşama: 5 Dakikalık Mikro Scalp Takip Döngüsü (Long Top 15 + Short Top 15)
+        print(f"[{simdi}] 3. Aşama: 5m Simetrik Scalp Takibi Başlatılıyor...")
+        sub_dongu_sayisi = 6
+        for adim in range(sub_dongu_sayisi):
+            try:
+                asyncio.run(run_dual_scalp_cycle(top_symbols, btc_regime))
+            except Exception as e_sc:
+                print(f"[-] Scalp döngü hatası: {e_sc}")
+
+            if adim < sub_dongu_sayisi - 1:
+                time.sleep(300)
+
+        try:
+            pnl_rapor = paper_engine.generate_two_layer_report()
+            telegram_mesaj_gonder(pnl_rapor, topic_id=PNL_TOPIC_ID)
+        except Exception as e:
+            print(f"[-] PnL raporu hatası: {e}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,33 @@
+{
+  "database_path": "qde.db",
+  "exchange": {
+    "market_type": "USDT-M-PERP",
+    "quote_asset": "USDT"
+  },
+  "timeframes": ["15m", "1h", "4h", "1d"],
+  "required_candles": {
+    "15m": 200,
+    "1h": 250,
+    "4h": 200,
+    "1d": 100
+  },
+  "concurrency": {
+    "max_parallel_symbols": 20
+  },
+  "rate_limit": {
+    "requests_per_second": 8.0,
+    "max_retries": 3,
+    "burst": 50
+  },
+  "cache": {
+    "ttl_seconds": {
+      "exchange_info": 3600,
+      "ohlcv": 60,
+      "ticker": 1800,
+      "funding": 1800,
+      "open_interest": 60,
+      "mark_price": 1800
+    }
+  },
+  "scan_profile": "balanced"
+}

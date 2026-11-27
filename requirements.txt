@@ -1,0 +1,13 @@
+# QDE V1 - runtime dependencies
+#
+# Confirmed via exhaustive import-scan of the entire codebase
+# (main.py, data/, engines/, indicators/, models/, output/, storage/,
+# and every standalone plugin module) - ccxt is the ONLY genuine
+# third-party runtime dependency. Everything else used throughout this
+# project is Python standard library (sqlite3, asyncio, json,
+# dataclasses, hashlib, threading, etc.).
+#
+# Install with: pip install -r requirements.txt --break-system-packages
+# (Termux/most Android Python builds require --break-system-packages)
+
+ccxt>=4.5.0,<5.0.0

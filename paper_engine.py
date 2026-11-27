@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""
+QDE Çift Kasalı Portföy Takip Motoru (Hatalardan Arındırılmış Kurumsal Versiyon)
+"""
+
+import json
+import sys
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+_DB_PATH = Path("paper_portfolio.db")
+INITIAL_BALANCE = 5000.0
+ALLOCATION_PCT = 0.10
+MAX_POOL_POSITIONS = 5   # 1. Kasa için çılgınlık engeli (22 işlem açıp batmasını önler)
+MAX_VAULT_POSITIONS = 3  # 2. Akıllı Kasa için katı disiplin sınırı
+
+# Trailing stop - kar koruma
+TRAILING_ACTIVATION_PCT = 1.5
+TRAILING_ATR_MULTIPLIER = 1.5
+PARTIAL_TP_RATIO = 0.5
+_UNIT_DAYS = {"gün": 1, "gun": 1, "hafta": 7, "ay": 30}
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS portfolio (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        current_balance REAL NOT NULL,
+        initial_balance REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS pool_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        stop_loss REAL NOT NULL,
+        tp1 REAL NOT NULL,
+        tp2 REAL NOT NULL,
+        leverage REAL NOT NULL,
+        allocated_margin REAL NOT NULL,
+        remaining_ratio REAL NOT NULL DEFAULT 1.0,
+        breakeven_active INTEGER NOT NULL DEFAULT 0,
+        current_price REAL,
+        status TEXT NOT NULL DEFAULT 'OPEN',
+        realized_pnl_usd REAL DEFAULT 0.0,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS vault_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        stop_loss REAL NOT NULL,
+        tp1 REAL NOT NULL,
+        tp2 REAL NOT NULL,
+        leverage REAL NOT NULL,
+        allocated_margin REAL NOT NULL,
+        remaining_ratio REAL NOT NULL DEFAULT 1.0,
+        breakeven_active INTEGER NOT NULL DEFAULT 0,
+        current_price REAL,
+        status TEXT NOT NULL DEFAULT 'OPEN',
+        realized_pnl_usd REAL DEFAULT 0.0,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS daily_ledger (
+        date TEXT PRIMARY KEY,
+        day_name TEXT NOT NULL,
+        open_balance REAL NOT NULL,
+        close_balance REAL NOT NULL,
+        net_pnl_usd REAL NOT NULL,
+        net_pnl_pct REAL NOT NULL
+    );
+    """)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if not conn.execute("SELECT id FROM portfolio WHERE id = 1").fetchone():
+        conn.execute("INSERT INTO portfolio VALUES (1, 'VAULT', ?, ?, ?)", (INITIAL_BALANCE, INITIAL_BALANCE, now_iso))
+    if not conn.execute("SELECT id FROM portfolio WHERE id = 2").fetchone():
+        conn.execute("INSERT INTO portfolio VALUES (2, 'POOL', ?, ?, ?)", (INITIAL_BALANCE, INITIAL_BALANCE, now_iso))
+    conn.commit()
+    return conn
+
+def parite_temizle(sym: str) -> str:
+    return sym.replace(":USDT", "").replace("/USDT", "").replace("#", "").strip().upper()
+
+def process_new_signal(signal_dict: dict) -> tuple[bool, str]:
+    raw_sym = signal_dict.get("Coin", "").strip()
+    if not raw_sym:
+        return False, "Geçersiz sembol"
+
+    clean_sym = parite_temizle(raw_sym)
+    try:
+        entry_p = float(signal_dict.get("Referans Giriş", 0))
+        sl_p = float(signal_dict.get("STOP LOSS", 0))
+        risk = abs(entry_p - sl_p)
+
+        tp1_raw = str(signal_dict.get("TP1", "0"))
+        if ":" in tp1_raw or float(tp1_raw) <= 0:
+            tp1_p = entry_p + (risk * 1.8)
+            tp2_p = entry_p + (risk * 3.0)
+        else:
+            tp1_p = float(tp1_raw)
+            tp2_p = float(signal_dict.get("TP2", entry_p + risk * 3.0))
+
+        lev_str = str(signal_dict.get("Önerilen Kaldıraç", "2x")).replace("x", "").strip()
+        leverage = float(lev_str) if lev_str else 2.0
+    except Exception as e:
+        return False, f"Hata: {e}"
+
+    if entry_p <= 0 or sl_p <= 0:
+        return False, "Geçersiz fiyat"
+
+    conn = get_conn()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. TÜM SİNYALLER KASASI (Maksimum 5 Açık Pozisyon Limitiyle Korundu)
+    pool_open_count = conn.execute("SELECT COUNT(*) FROM pool_positions WHERE status = 'OPEN'").fetchone()[0]
+    pool_acik = conn.execute("SELECT id FROM pool_positions WHERE symbol = ? AND status = 'OPEN'", (clean_sym,)).fetchone()
+    
+    if pool_open_count < MAX_POOL_POSITIONS and not pool_acik:
+        p_row = conn.execute("SELECT current_balance FROM portfolio WHERE id = 2").fetchone()
+        p_bal = p_row["current_balance"] if p_row else INITIAL_BALANCE
+        p_margin = p_bal * ALLOCATION_PCT
+        conn.execute("""
+            INSERT INTO pool_positions (
+                symbol, entry_price, stop_loss, tp1, tp2, leverage,
+                allocated_margin, remaining_ratio, breakeven_active, current_price, status, opened_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, 0, ?, 'OPEN', ?)
+        """, (clean_sym, entry_p, sl_p, tp1_p, tp2_p, leverage, p_margin, entry_p, now_iso))
+
+    # 2. AKILLI QDE KASASI (Yapay filtreler kaldırıldı; boş slot varsa KESİNTİSİZ ALIR)
+    v_open_count = conn.execute("SELECT COUNT(*) FROM vault_positions WHERE status = 'OPEN'").fetchone()[0]
+    v_acik = conn.execute("SELECT id FROM vault_positions WHERE symbol = ? AND status = 'OPEN'", (clean_sym,)).fetchone()
+
+    kasa_alindi = False
+    if v_open_count < MAX_VAULT_POSITIONS and not v_acik:
+        v_row = conn.execute("SELECT current_balance FROM portfolio WHERE id = 1").fetchone()
+        v_bal = v_row["current_balance"] if v_row else INITIAL_BALANCE
+        v_margin = v_bal * ALLOCATION_PCT
+        conn.execute("""
+            INSERT INTO vault_positions (
+                symbol, entry_price, stop_loss, tp1, tp2, leverage,
+                allocated_margin, remaining_ratio, breakeven_active, current_price, status, opened_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, 0, ?, 'OPEN', ?)
+        """, (clean_sym, entry_p, sl_p, tp1_p, tp2_p, leverage, v_margin, entry_p, now_iso))
+        kasa_alindi = True
+        print(f"\n[💎] SMART KASA İŞLEME GİRDİ: #{clean_sym} | Slot: {v_open_count+1}/{MAX_VAULT_POSITIONS} | Marjin: ${v_margin:.2f}\n")
+    else:
+        if v_open_count >= MAX_VAULT_POSITIONS:
+            print(f"[i] #{clean_sym} Smart Kasa slotları dolu ({v_open_count}/{MAX_VAULT_POSITIONS}), nakit kalkanı korundu.")
+
+    conn.commit()
+    conn.close()
+    return kasa_alindi, clean_sym
+
+def _update_trailing_stop(conn, table_name: str, pos, last_p: float) -> None:
+    """Kardayken stop'u takip ettir (trailing stop)."""
+    entry_p = pos["entry_price"]
+    current_stop = pos["stop_loss"]
+
+    profit_pct = ((last_p - entry_p) / entry_p) * 100
+    if profit_pct < TRAILING_ACTIVATION_PCT:
+        return
+
+    # Basit yuzde bazli trailing: stop = fiyat - (fiyat * %1.2)
+    new_stop = last_p * (1 - 0.012)
+
+    if new_stop > current_stop:
+        conn.execute(
+            f"UPDATE {table_name} SET stop_loss = ?, breakeven_active = 1 WHERE id = ?",
+            (new_stop, pos["id"])
+        )
+        print(f"[TRAILING] #{pos['symbol']} stop {current_stop:.6g} -> {new_stop:.6g}")
+
+
+def update_table_positions(conn, table_name: str, portfolio_id: int, tickers: dict, now_iso: str):
+    p_row = conn.execute("SELECT current_balance FROM portfolio WHERE id = ?", (portfolio_id,)).fetchone()
+    balance = p_row["current_balance"]
+    positions = conn.execute(f"SELECT * FROM {table_name} WHERE status = 'OPEN'").fetchall()
+
+    for pos in positions:
+        sym = pos["symbol"]
+        t_data = (
+            tickers.get(f"{sym}/USDT:USDT") or tickers.get(f"{sym}/USDT") or
+            tickers.get(f"{sym}USDT") or tickers.get(sym) or {}
+        )
+        last_p = t_data.get("last")
+        if not last_p:
+            continue
+
+        entry_p = pos["entry_price"]
+        sl_p = entry_p if pos["breakeven_active"] else pos["stop_loss"]
+        tp1_p = pos["tp1"]
+        tp2_p = pos["tp2"]
+        lev = pos["leverage"]
+        margin = pos["allocated_margin"]
+
+        # 1. Stop Vuruldu
+        if last_p <= sl_p:
+            if pos["breakeven_active"]:
+                conn.execute(f"UPDATE {table_name} SET status = 'CLOSED_BREAKEVEN', current_price = ?, closed_at = ? WHERE id = ?",
+                             (entry_p, now_iso, pos["id"]))
+                print(f"[🛡️] MALİYETTE KAPANDI: #{sym} (Kâr korundu, zarar sıfır).")
+            else:
+                pnl_pct = ((sl_p - entry_p) / entry_p) * lev * 100
+                loss_usd = margin * (pnl_pct / 100)
+                balance += loss_usd
+                conn.execute(f"UPDATE {table_name} SET status = 'CLOSED_SL', current_price = ?, realized_pnl_usd = ?, closed_at = ? WHERE id = ?",
+                             (sl_p, loss_usd, now_iso, pos["id"]))
+                print(f"[-] STOP OLDU: #{sym} | Kayıp: ${loss_usd:.2f}")
+
+        # 2. TP1 Vuruldu (%50 Kâr Alındı, Stop Girişe Çekildi)
+        elif last_p >= tp1_p and not pos["breakeven_active"]:
+            partial_pct = ((tp1_p - entry_p) / entry_p) * lev * 100
+            half_gain = (margin * 0.5) * (partial_pct / 100)
+            balance += half_gain
+            conn.execute(f"""
+                UPDATE {table_name} SET
+                    breakeven_active = 1,
+                    remaining_ratio = 0.5,
+                    realized_pnl_usd = ?,
+                    current_price = ?
+                WHERE id = ?
+            """, (half_gain, tp1_p, pos["id"]))
+            print(f"[🎯] TP1 ALINDI: #{sym} %50 Kâr Kasada (+${half_gain:.2f}), Stop Giriş Fiyatına Çekildi!")
+
+        # 2.5. Trailing stop guncelle (kardaysa)
+        else:
+            _update_trailing_stop(conn, table_name, pos, last_p)
+
+        # 3. TP2 Vuruldu (Kalan %50 Tam Kârla Kapandı)
+        if last_p >= tp2_p and pos["breakeven_active"]:
+            rem_pct = ((tp2_p - entry_p) / entry_p) * lev * 100
+            rem_gain = (margin * 0.5) * (rem_pct / 100)
+            balance += rem_gain
+            total_gain = pos["realized_pnl_usd"] + rem_gain
+            conn.execute(f"UPDATE {table_name} SET status = 'CLOSED_FULL_TP', current_price = ?, realized_pnl_usd = ?, closed_at = ? WHERE id = ?",
+                         (tp2_p, total_gain, now_iso, pos["id"]))
+            print(f"[🚀] TP2 ALINDI (TAM KÂR): #{sym} Toplam Kâr: +${total_gain:.2f}")
+
+        else:
+            conn.execute(f"UPDATE {table_name} SET current_price = ? WHERE id = ?", (last_p, pos["id"]))
+
+    conn.execute("UPDATE portfolio SET current_balance = ?, updated_at = ? WHERE id = ?", (balance, now_iso, portfolio_id))
+
+def update_all_with_prices(tickers: dict):
+    conn = get_conn()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update_table_positions(conn, "pool_positions", 2, tickers, now_iso)
+    update_table_positions(conn, "vault_positions", 1, tickers, now_iso)
+    conn.commit()
+    conn.close()
+
+def generate_two_layer_report() -> str:
+    conn = get_conn()
+
+    # 1. Kasa (Max 5 işlem limitli Sinyal Havuzu)
+    p_row = conn.execute("SELECT current_balance, initial_balance FROM portfolio WHERE id = 2").fetchone()
+    p_cur = p_row["current_balance"] if p_row else INITIAL_BALANCE
+    p_init = p_row["initial_balance"] if p_row else INITIAL_BALANCE
+    p_open = conn.execute("SELECT * FROM pool_positions WHERE status = 'OPEN'").fetchall()
+    p_tp = conn.execute("SELECT COUNT(*) FROM pool_positions WHERE status IN ('CLOSED_TP', 'CLOSED_FULL_TP', 'CLOSED_BREAKEVEN')").fetchone()[0]
+    p_sl = conn.execute("SELECT COUNT(*) FROM pool_positions WHERE status = 'CLOSED_SL'").fetchone()[0]
+
+    p_unreal = 0.0
+    for pp in p_open:
+        curr_p = pp["current_price"] or pp["entry_price"]
+        diff_pct = (((curr_p - pp["entry_price"])) / pp["entry_price"]) * pp["leverage"] * 100
+        p_unreal += (pp["allocated_margin"] * pp["remaining_ratio"]) * (diff_pct / 100)
+
+    p_equity = p_cur + p_unreal
+    p_net_pct = ((p_equity - p_init) / p_init) * 100 if p_init > 0 else 0.0
+    p_win_rate = (p_tp / (p_tp + p_sl) * 100) if (p_tp + p_sl) > 0 else 0.0
+    p_sign = "+" if p_net_pct >= 0 else ""
+
+    # 2. Kasa (Smart Kasa: Max 3 Slot)
+    v_row = conn.execute("SELECT current_balance, initial_balance FROM portfolio WHERE id = 1").fetchone()
+    v_cur = v_row["current_balance"] if v_row else INITIAL_BALANCE
+    v_init = v_row["initial_balance"] if v_row else INITIAL_BALANCE
+    v_open = conn.execute("SELECT * FROM vault_positions WHERE status = 'OPEN'").fetchall()
+    v_open_count = len(v_open)
+
+    filled = min(v_open_count, MAX_VAULT_POSITIONS)
+    empty = max(0, MAX_VAULT_POSITIONS - filled)
+    slot_bar = "🟢" * filled + "⚪" * empty
+
+    v_unreal = 0.0
+    v_items = []
+    for vp in v_open:
+        curr_p = vp["current_price"] or vp["entry_price"]
+        diff_pct = (((curr_p - vp["entry_price"])) / vp["entry_price"]) * vp["leverage"] * 100
+        v_unreal += (vp["allocated_margin"] * vp["remaining_ratio"]) * (diff_pct / 100)
+        durum = "🛡️BE" if vp["breakeven_active"] else "⏳"
+        sp = "+" if diff_pct >= 0 else ""
+        v_items.append(f"<b>#{vp['symbol']}</b> <code>({sp}{diff_pct:.1f}% {durum})</code>")
+
+    v_equity = v_cur + v_unreal
+    v_net_pct = ((v_equity - v_init) / v_init) * 100 if v_init > 0 else 0.0
+    v_cash_pct = max(0, 100 - (v_open_count * 10))
+    v_sign = "+" if v_net_pct >= 0 else ""
+    v_pos_str = " • ".join(v_items) if v_items else "Açık pozisyon yok"
+
+    conn.close()
+
+    rapor = f"""📊 <b>QDE SİSTEM & KASA RAPORU</b>
+════════════════════
+🌐 <b>1. TÜM SİNYALLER KASASI</b> <i>($5.000)</i>
+💸 Varlık: <b>{p_equity:,.2f} $</b> <code>({p_sign}{p_net_pct:.2f}%)</code>
+🎯 Başarı: <b>%{p_win_rate:.1f}</b> ({p_tp}✅ / {p_sl}🛑) • ⏳ Açık: {len(p_open)}/{MAX_POOL_POSITIONS}
+📋 Kural: Max 5 işlem, her onaylı sinyale giriş.
+
+🛡️ <b>2. QDE AKILLI KASA YÖNETİMİ</b> <i>($5.000)</i>
+💎 Varlık: <b>{v_equity:,.2f} $</b> <code>({v_sign}{v_net_pct:.2f}%)</code>
+🏦 Slot: <b>[{slot_bar}] {v_open_count}/{MAX_VAULT_POSITIONS}</b> • 🛡️ Nakit: %{v_cash_pct}
+📈 Pozisyon: {v_pos_str}
+📋 Kural: Max 3 işlem, TP1 %50 kâr al & Breakeven.
+════════════════════
+ℹ️ <b>Kasa Mantığı:</b>
+• 1. Kasa: 5 işlem havuzuyla algoritmanın ham başarısını ölçer.
+• 2. Kasa: En iyi 3 işlemi açarak kriz anlarında kasayı savunur."""
+
+    return rapor
+
+def generate_bar_chart_url_and_caption() -> tuple[str, str]:
+    conn = get_conn()
+    records = conn.execute("SELECT * FROM daily_ledger ORDER BY date DESC LIMIT 7").fetchall()
+    conn.close()
+
+    gunler = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+    bakiyeler = []
+    labels = []
+
+    if records:
+        for r in reversed(records):
+            labels.append(r["day_name"])
+            bakiyeler.append(round(r["close_balance"], 2))
+    else:
+        today_name = gunler[datetime.now().weekday()]
+        labels = [today_name]
+        bakiyeler = [5000.0]
+
+    min_val = max(0, min(bakiyeler) - 200)
+    max_val = max(bakiyeler) + 200
+
+    import urllib.parse
+    chart_config = {
+        "type": "bar",
+        "data": {
+            "labels": labels,
+            "datasets": [{
+                "label": "Kasa Bakiyesi ($)",
+                "data": bakiyeler,
+                "backgroundColor": "rgba(54, 162, 235, 0.75)",
+                "borderColor": "rgba(54, 162, 235, 1)",
+                "borderWidth": 2,
+                "borderRadius": 4
+            }]
+        },
+        "options": {
+            "title": {"display": True, "text": "QDE Günlük Kasa Kronolojisi ($)", "fontSize": 16},
+            "legend": {"display": False},
+            "scales": {
+                "yAxes": [{
+                    "ticks": {"min": round(min_val, -1), "max": round(max_val, -1)}
+                }]
+            }
+        }
+    }
+
+    url = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(chart_config))}&w=600&h=350&bkg=white"
+    caption = f"""📊 <b>QDE GÜNLÜK KASA GRAFİĞİ (SÜTUN)</b>
+───────────────────────────────
+💰 <b>Güncel Kasa :</b> <code>{bakiyeler[-1]:,.2f} $</code>
+📅 <b>Dönem       :</b> Son {len(labels)} Gün
+📈 <b>Grafik Türü :</b> Günlük Kapanış Sütunları
+───────────────────────────────
+<i>*Her gece 00:00'da güncellenir.*</i>"""
+    return url, caption
+
+def record_daily_close():
+    conn = get_conn()
+    port = conn.execute("SELECT current_balance FROM portfolio WHERE id = 1").fetchone()
+    cur_bal = port["current_balance"] if port else INITIAL_BALANCE
+
+    now = datetime.now()
+    yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    gunler = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+    day_name = gunler[(now - timedelta(days=1)).weekday()]
+
+    row = conn.execute("SELECT close_balance FROM daily_ledger ORDER BY date DESC LIMIT 1").fetchone()
+    prev_close = row["close_balance"] if row else INITIAL_BALANCE
+
+    net_usd = cur_bal - prev_close
+    net_pct = (net_usd / prev_close) * 100 if prev_close > 0 else 0.0
+
+    conn.execute("""
+        INSERT OR REPLACE INTO daily_ledger (date, day_name, open_balance, close_balance, net_pnl_usd, net_pnl_pct)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (yesterday_str, day_name, prev_close, cur_bal, net_usd, net_pct))
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    pass

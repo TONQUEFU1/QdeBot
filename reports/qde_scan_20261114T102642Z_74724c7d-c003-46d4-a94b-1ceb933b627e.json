@@ -1,0 +1,2428 @@
+{
+  "scan_summary": {
+    "run_id": "74724c7d-c003-46d4-a94b-1ceb933b627e",
+    "symbols_scanned": 522,
+    "symbols_passed": 49,
+    "avg_confidence": 67.28,
+    "avg_score": 53.01,
+    "scan_duration_seconds": 290.73
+  },
+  "results": [
+    {
+      "symbol": "SKYAI/USDT:USDT",
+      "score": 100.0,
+      "confidence": 85.0,
+      "risk_grade": "A+",
+      "uniqueness": 98.94,
+      "expected_move": {
+        "10_percent": 0.93,
+        "20_percent": 0.64,
+        "30_percent": 0.41
+      },
+      "expected_duration": "4-12h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "positive",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": 0.45,
+        "trend": 20.0,
+        "volatility": 0.0,
+        "volume": 1.59
+      },
+      "passed": true,
+      "setup_id": "d24c8f66-c527-4ec5-8a74-1c6a8be438e5",
+      "timestamp": "2026-11-14T10:22:36.342147+00:00"
+    },
+    {
+      "symbol": "USUAL/USDT:USDT",
+      "score": 100.0,
+      "confidence": 85.0,
+      "risk_grade": "A+",
+      "uniqueness": 98.94,
+      "expected_move": {
+        "10_percent": 0.93,
+        "20_percent": 0.64,
+        "30_percent": 0.41
+      },
+      "expected_duration": "4-12h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "positive",
+        "volatility": "positive",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": 2.63,
+        "trend": 2.48,
+        "volatility": 0.86,
+        "volume": 18.0
+      },
+      "passed": true,
+      "setup_id": "d1135c26-21d7-4aee-997f-3d966f2a2219",
+      "timestamp": "2026-11-14T10:22:10.233396+00:00"
+    },
+    {
+      "symbol": "BB/USDT:USDT",
+      "score": 82.99,
+      "confidence": 81.6,
+      "risk_grade": "A",
+      "uniqueness": 97.58,
+      "expected_move": {
+        "10_percent": 0.84,
+        "20_percent": 0.57,
+        "30_percent": 0.35
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": 0.19,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": 18.0
+      },
+      "passed": true,
+      "setup_id": "55ee8449-d628-4167-8201-8c09e034635e",
+      "timestamp": "2026-11-14T10:22:11.583795+00:00"
+    },
+    {
+      "symbol": "GRIFFAIN/USDT:USDT",
+      "score": 81.98,
+      "confidence": 81.4,
+      "risk_grade": "A",
+      "uniqueness": 97.12,
+      "expected_move": {
+        "10_percent": 0.83,
+        "20_percent": 0.57,
+        "30_percent": 0.35
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -0.82,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": 18.0
+      },
+      "passed": true,
+      "setup_id": "06284dd4-fe22-495a-b645-f76a1bf44810",
+      "timestamp": "2026-11-14T10:22:24.194039+00:00"
+    },
+    {
+      "symbol": "ALPINE/USDT:USDT",
+      "score": 80.91,
+      "confidence": 81.18,
+      "risk_grade": "A",
+      "uniqueness": 96.67,
+      "expected_move": {
+        "10_percent": 0.83,
+        "20_percent": 0.56,
+        "30_percent": 0.35
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.2,
+        "trend": -15.0,
+        "volatility": -0.69,
+        "volume": 18.0
+      },
+      "passed": true,
+      "setup_id": "9c569785-0724-4d31-82b9-d74e7ce4c3cf",
+      "timestamp": "2026-11-14T10:22:23.832435+00:00"
+    },
+    {
+      "symbol": "B2/USDT:USDT",
+      "score": 80.69,
+      "confidence": 81.14,
+      "risk_grade": "A",
+      "uniqueness": 96.21,
+      "expected_move": {
+        "10_percent": 0.83,
+        "20_percent": 0.56,
+        "30_percent": 0.35
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": 1.58,
+        "trend": -1.66,
+        "volatility": 3.75,
+        "volume": -2.78
+      },
+      "passed": true,
+      "setup_id": "0319df5b-1916-4b06-b3a0-93b6d99eeedf",
+      "timestamp": "2026-11-14T10:22:24.339976+00:00"
+    },
+    {
+      "symbol": "HAEDAL/USDT:USDT",
+      "score": 69.08,
+      "confidence": 78.82,
+      "risk_grade": "B",
+      "uniqueness": 94.85,
+      "expected_move": {
+        "10_percent": 0.77,
+        "20_percent": 0.52,
+        "30_percent": 0.31
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 4.91,
+        "open_interest": 10.8,
+        "relative_strength": 0.09,
+        "trend": -2.95,
+        "volatility": 0.0,
+        "volume": 2.23
+      },
+      "passed": true,
+      "setup_id": "c31e5a87-fcc4-4921-bdc5-ee8bc8fc5f4f",
+      "timestamp": "2026-11-14T10:22:12.320708+00:00"
+    },
+    {
+      "symbol": "HOT/USDT:USDT",
+      "score": 68.51,
+      "confidence": 78.7,
+      "risk_grade": "B",
+      "uniqueness": 93.94,
+      "expected_move": {
+        "10_percent": 0.77,
+        "20_percent": 0.52,
+        "30_percent": 0.31
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.12,
+        "trend": -7.19,
+        "volatility": 0.21,
+        "volume": -1.2
+      },
+      "passed": true,
+      "setup_id": "d1b3c833-652c-4bcf-83a1-c21617e0a54a",
+      "timestamp": "2026-11-14T10:22:10.518387+00:00"
+    },
+    {
+      "symbol": "ZRO/USDT:USDT",
+      "score": 62.3,
+      "confidence": 77.46,
+      "risk_grade": "B",
+      "uniqueness": 90.0,
+      "expected_move": {
+        "10_percent": 0.74,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.01,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -1.49
+      },
+      "passed": true,
+      "setup_id": "25c725ed-fd65-457f-8cc5-561e65664adb",
+      "timestamp": "2026-11-14T10:22:35.062520+00:00"
+    },
+    {
+      "symbol": "SYN/USDT:USDT",
+      "score": 60.9,
+      "confidence": 77.18,
+      "risk_grade": "B",
+      "uniqueness": 89.09,
+      "expected_move": {
+        "10_percent": 0.74,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.74,
+        "trend": -15.0,
+        "volatility": -2.63,
+        "volume": 0.47
+      },
+      "passed": true,
+      "setup_id": "75d646fc-1117-476c-ad42-a2d898997076",
+      "timestamp": "2026-11-14T10:22:47.579602+00:00"
+    },
+    {
+      "symbol": "RARE/USDT:USDT",
+      "score": 60.88,
+      "confidence": 77.18,
+      "risk_grade": "B",
+      "uniqueness": 88.64,
+      "expected_move": {
+        "10_percent": 0.73,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.23,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -0.69
+      },
+      "passed": true,
+      "setup_id": "4e816446-3231-43c4-ab42-cb478ceffaf0",
+      "timestamp": "2026-11-14T10:22:36.613964+00:00"
+    },
+    {
+      "symbol": "SWARMS/USDT:USDT",
+      "score": 60.29,
+      "confidence": 77.06,
+      "risk_grade": "B",
+      "uniqueness": 83.03,
+      "expected_move": {
+        "10_percent": 0.73,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 6.04,
+        "open_interest": 10.8,
+        "relative_strength": -1.48,
+        "trend": -6.06,
+        "volatility": 0.0,
+        "volume": -3.0
+      },
+      "passed": true,
+      "setup_id": "0cc4068c-8984-4b5f-94eb-1c7039e7496e",
+      "timestamp": "2026-11-14T10:22:36.712988+00:00"
+    },
+    {
+      "symbol": "LSK/USDT:USDT",
+      "score": 60.15,
+      "confidence": 77.03,
+      "risk_grade": "B",
+      "uniqueness": 88.94,
+      "expected_move": {
+        "10_percent": 0.73,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "neutral",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 1.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -4.19,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": 2.53
+      },
+      "passed": true,
+      "setup_id": "0a5a2415-c432-4f96-86dc-34a1ebc746dd",
+      "timestamp": "2026-11-14T10:26:06.251962+00:00"
+    },
+    {
+      "symbol": "OGN/USDT:USDT",
+      "score": 57.86,
+      "confidence": 76.57,
+      "risk_grade": "B",
+      "uniqueness": 87.42,
+      "expected_move": {
+        "10_percent": 0.72,
+        "20_percent": 0.48,
+        "30_percent": 0.28
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 4.25,
+        "open_interest": 10.8,
+        "relative_strength": -2.64,
+        "trend": -15.0,
+        "volatility": -3.54,
+        "volume": 10.0
+      },
+      "passed": true,
+      "setup_id": "9a38c6da-4dca-4a3d-b1af-63bdccec0f4b",
+      "timestamp": "2026-11-14T10:22:11.466397+00:00"
+    },
+    {
+      "symbol": "COOKIE/USDT:USDT",
+      "score": 57.07,
+      "confidence": 76.41,
+      "risk_grade": "B",
+      "uniqueness": 81.67,
+      "expected_move": {
+        "10_percent": 0.72,
+        "20_percent": 0.47,
+        "30_percent": 0.28
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.04,
+        "open_interest": 10.8,
+        "relative_strength": -1.16,
+        "trend": -8.77,
+        "volatility": 0.0,
+        "volume": -2.84
+      },
+      "passed": true,
+      "setup_id": "61d49040-f8e5-4ddc-af09-cfc73e7ce4ed",
+      "timestamp": "2026-11-14T10:22:35.702101+00:00"
+    },
+    {
+      "symbol": "1000SHIB/USDT:USDT",
+      "score": 55.61,
+      "confidence": 76.12,
+      "risk_grade": "B",
+      "uniqueness": 85.0,
+      "expected_move": {
+        "10_percent": 0.71,
+        "20_percent": 0.47,
+        "30_percent": 0.28
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -2.19,
+        "trend": -15.0,
+        "volatility": -4.0,
+        "volume": -3.0
+      },
+      "passed": true,
+      "setup_id": "498efeb2-ba8e-41e5-a109-1a87f397d5d2",
+      "timestamp": "2026-11-14T10:22:11.942668+00:00"
+    },
+    {
+      "symbol": "DOOD/USDT:USDT",
+      "score": 54.45,
+      "confidence": 75.89,
+      "risk_grade": "B",
+      "uniqueness": 79.85,
+      "expected_move": {
+        "10_percent": 0.71,
+        "20_percent": 0.47,
+        "30_percent": 0.27
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 7.46,
+        "open_interest": 10.8,
+        "relative_strength": -1.48,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -1.34
+      },
+      "passed": true,
+      "setup_id": "275ce8ad-19ca-4db5-8e2f-0017d2c1006c",
+      "timestamp": "2026-11-14T10:22:35.336245+00:00"
+    },
+    {
+      "symbol": "TAO/USDT:USDT",
+      "score": 51.61,
+      "confidence": 75.32,
+      "risk_grade": "C",
+      "uniqueness": 78.94,
+      "expected_move": {
+        "10_percent": 0.69,
+        "20_percent": 0.46,
+        "30_percent": 0.27
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.8,
+        "open_interest": 10.8,
+        "relative_strength": -0.99,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -3.0
+      },
+      "passed": true,
+      "setup_id": "5964f178-c708-4a65-88c2-3614fb6f5128",
+      "timestamp": "2026-11-14T10:22:10.585740+00:00"
+    },
+    {
+      "symbol": "REZ/USDT:USDT",
+      "score": 50.12,
+      "confidence": 75.02,
+      "risk_grade": "C",
+      "uniqueness": 78.03,
+      "expected_move": {
+        "10_percent": 0.69,
+        "20_percent": 0.45,
+        "30_percent": 0.26
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 6.27,
+        "open_interest": 10.8,
+        "relative_strength": -3.82,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -2.14
+      },
+      "passed": true,
+      "setup_id": "ba5cce24-1bb9-420d-a92a-2ee5176d37fc",
+      "timestamp": "2026-11-14T10:22:11.067095+00:00"
+    },
+    {
+      "symbol": "ZK/USDT:USDT",
+      "score": 49.77,
+      "confidence": 74.95,
+      "risk_grade": "C",
+      "uniqueness": 76.52,
+      "expected_move": {
+        "10_percent": 0.69,
+        "20_percent": 0.45,
+        "30_percent": 0.26
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 1.36,
+        "open_interest": 10.8,
+        "relative_strength": -1.69,
+        "trend": -15.0,
+        "volatility": -1.94,
+        "volume": 2.24
+      },
+      "passed": true,
+      "setup_id": "241348ea-1f2b-4072-b161-624661d00c9b",
+      "timestamp": "2026-11-14T10:22:23.584741+00:00"
+    },
+    {
+      "symbol": "NOT/USDT:USDT",
+      "score": 47.83,
+      "confidence": 74.57,
+      "risk_grade": "C",
+      "uniqueness": 75.15,
+      "expected_move": {
+        "10_percent": 0.68,
+        "20_percent": 0.44,
+        "30_percent": 0.26
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 2.61,
+        "open_interest": 10.8,
+        "relative_strength": -1.9,
+        "trend": -15.0,
+        "volatility": -2.06,
+        "volume": -0.62
+      },
+      "passed": true,
+      "setup_id": "ec9f6c1e-fa76-44ec-80ae-8acbc2c2d2fd",
+      "timestamp": "2026-11-14T10:22:12.062951+00:00"
+    },
+    {
+      "symbol": "1INCH/USDT:USDT",
+      "score": 45.5,
+      "confidence": 74.1,
+      "risk_grade": "C",
+      "uniqueness": 80.61,
+      "expected_move": {
+        "10_percent": 0.67,
+        "20_percent": 0.43,
+        "30_percent": 0.25
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "neutral",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 1.0,
+        "momentum": 3.68,
+        "open_interest": 10.8,
+        "relative_strength": -2.35,
+        "trend": -15.0,
+        "volatility": -2.74,
+        "volume": 0.11
+      },
+      "passed": true,
+      "setup_id": "c1571469-875d-4c98-ba75-98fc6941c804",
+      "timestamp": "2026-11-14T10:26:20.799679+00:00"
+    },
+    {
+      "symbol": "TURBO/USDT:USDT",
+      "score": 45.33,
+      "confidence": 74.07,
+      "risk_grade": "C",
+      "uniqueness": 73.79,
+      "expected_move": {
+        "10_percent": 0.67,
+        "20_percent": 0.43,
+        "30_percent": 0.25
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.29,
+        "open_interest": 10.8,
+        "relative_strength": -2.9,
+        "trend": -15.0,
+        "volatility": -4.34,
+        "volume": -2.52
+      },
+      "passed": true,
+      "setup_id": "ed1d533d-ca22-4545-8e7c-d5ae4e27644e",
+      "timestamp": "2026-11-14T10:22:22.553261+00:00"
+    },
+    {
+      "symbol": "MASK/USDT:USDT",
+      "score": 41.97,
+      "confidence": 73.39,
+      "risk_grade": "C",
+      "uniqueness": 70.61,
+      "expected_move": {
+        "10_percent": 0.65,
+        "20_percent": 0.42,
+        "30_percent": 0.24
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 2.5,
+        "open_interest": 10.8,
+        "relative_strength": -3.06,
+        "trend": -15.0,
+        "volatility": -4.46,
+        "volume": -2.81
+      },
+      "passed": true,
+      "setup_id": "60c64f34-83b6-4f05-a185-f90431226393",
+      "timestamp": "2026-11-14T10:22:24.460851+00:00"
+    },
+    {
+      "symbol": "ZEREBRO/USDT:USDT",
+      "score": 40.63,
+      "confidence": 73.13,
+      "risk_grade": "C",
+      "uniqueness": 74.39,
+      "expected_move": {
+        "10_percent": 0.65,
+        "20_percent": 0.42,
+        "30_percent": 0.24
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -2.81,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": 1.64
+      },
+      "passed": true,
+      "setup_id": "a1ce5916-2455-4af4-82e4-cecb921727b5",
+      "timestamp": "2026-11-14T10:22:24.734957+00:00"
+    },
+    {
+      "symbol": "PHA/USDT:USDT",
+      "score": 39.95,
+      "confidence": 72.99,
+      "risk_grade": "C",
+      "uniqueness": 73.48,
+      "expected_move": {
+        "10_percent": 0.65,
+        "20_percent": 0.42,
+        "30_percent": 0.24
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.57,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": 1.73
+      },
+      "passed": true,
+      "setup_id": "3a774376-29ca-4ed2-8ea0-10c364de9f5e",
+      "timestamp": "2026-11-14T10:22:23.717588+00:00"
+    },
+    {
+      "symbol": "GALA/USDT:USDT",
+      "score": 38.62,
+      "confidence": 72.72,
+      "risk_grade": "C",
+      "uniqueness": 72.58,
+      "expected_move": {
+        "10_percent": 0.64,
+        "20_percent": 0.41,
+        "30_percent": 0.23
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.55,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -1.63
+      },
+      "passed": true,
+      "setup_id": "dafe23fe-f88b-4dc4-a95b-938514a606dd",
+      "timestamp": "2026-11-14T10:22:35.939360+00:00"
+    },
+    {
+      "symbol": "FARTCOIN/USDT:USDT",
+      "score": 37.95,
+      "confidence": 72.59,
+      "risk_grade": "C",
+      "uniqueness": 71.67,
+      "expected_move": {
+        "10_percent": 0.64,
+        "20_percent": 0.41,
+        "30_percent": 0.23
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.46,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -0.39
+      },
+      "passed": true,
+      "setup_id": "f0ca9b98-51d5-49bc-bd2c-99e190e2d5e2",
+      "timestamp": "2026-11-14T10:22:11.206745+00:00"
+    },
+    {
+      "symbol": "NXPC/USDT:USDT",
+      "score": 37.01,
+      "confidence": 72.4,
+      "risk_grade": "C",
+      "uniqueness": 69.24,
+      "expected_move": {
+        "10_percent": 0.63,
+        "20_percent": 0.41,
+        "30_percent": 0.23
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.48,
+        "trend": -15.0,
+        "volatility": -1.83,
+        "volume": 0.52
+      },
+      "passed": true,
+      "setup_id": "1eaf59b6-9fb6-49b3-8f44-add302763fe0",
+      "timestamp": "2026-11-14T10:22:36.829339+00:00"
+    },
+    {
+      "symbol": "SYRUP/USDT:USDT",
+      "score": 34.99,
+      "confidence": 72.0,
+      "risk_grade": "C",
+      "uniqueness": 67.88,
+      "expected_move": {
+        "10_percent": 0.63,
+        "20_percent": 0.4,
+        "30_percent": 0.23
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -4.35,
+        "trend": -15.0,
+        "volatility": -2.74,
+        "volume": 0.28
+      },
+      "passed": true,
+      "setup_id": "b7ba7ae4-072c-4d22-8bbc-c9d73842befd",
+      "timestamp": "2026-11-14T10:22:24.831035+00:00"
+    },
+    {
+      "symbol": "DYDX/USDT:USDT",
+      "score": 32.04,
+      "confidence": 71.41,
+      "risk_grade": "C",
+      "uniqueness": 67.42,
+      "expected_move": {
+        "10_percent": 0.61,
+        "20_percent": 0.39,
+        "30_percent": 0.22
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.69,
+        "trend": -15.0,
+        "volatility": -4.46,
+        "volume": -1.61
+      },
+      "passed": true,
+      "setup_id": "8745a226-0d74-428c-8217-daa410691344",
+      "timestamp": "2026-11-14T10:22:34.992673+00:00"
+    },
+    {
+      "symbol": "AR/USDT:USDT",
+      "score": 28.81,
+      "confidence": 70.76,
+      "risk_grade": "D",
+      "uniqueness": 66.06,
+      "expected_move": {
+        "10_percent": 0.6,
+        "20_percent": 0.38,
+        "30_percent": 0.21
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -5.42,
+        "trend": -15.0,
+        "volatility": -4.57,
+        "volume": -3.0
+      },
+      "passed": true,
+      "setup_id": "c7713415-b962-4d58-ae39-ef4375feeaa5",
+      "timestamp": "2026-11-14T10:22:36.966443+00:00"
+    },
+    {
+      "symbol": "AIOT/USDT:USDT",
+      "score": 86.31,
+      "confidence": 58.26,
+      "risk_grade": "B",
+      "uniqueness": 98.03,
+      "expected_move": {
+        "10_percent": 0.75,
+        "20_percent": 0.5,
+        "30_percent": 0.3
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "neutral",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "positive",
+        "volatility": "positive",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 1.0,
+        "momentum": 7.86,
+        "open_interest": 10.8,
+        "relative_strength": 0.12,
+        "trend": 20.0,
+        "volatility": 6.54,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "8c804b4b-02a5-4821-8153-fa04ba32abb7",
+      "timestamp": "2026-11-14T10:22:11.324028+00:00"
+    },
+    {
+      "symbol": "INJ/USDT:USDT",
+      "score": 68.52,
+      "confidence": 54.7,
+      "risk_grade": "C",
+      "uniqueness": 94.39,
+      "expected_move": {
+        "10_percent": 0.69,
+        "20_percent": 0.45,
+        "30_percent": 0.26
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "positive",
+        "volatility": "positive",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 2.38,
+        "open_interest": 10.8,
+        "relative_strength": 3.27,
+        "trend": 1.97,
+        "volatility": 6.11,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "9eedda7e-5d82-40a1-8f0b-920355e95e4f",
+      "timestamp": "2026-11-14T10:23:16.964598+00:00"
+    },
+    {
+      "symbol": "BTCDOM/USDT:USDT",
+      "score": 66.47,
+      "confidence": 54.29,
+      "risk_grade": "C",
+      "uniqueness": 93.48,
+      "expected_move": {
+        "10_percent": 0.68,
+        "20_percent": 0.44,
+        "30_percent": 0.26
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "positive",
+        "volatility": "neutral",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 7.53,
+        "open_interest": 10.8,
+        "relative_strength": 0.14,
+        "trend": 4.0,
+        "volatility": 0.0,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "d8fde9c2-4f23-4048-b2d5-cf15b35b3818",
+      "timestamp": "2026-11-14T10:22:22.924186+00:00"
+    },
+    {
+      "symbol": "BANANA/USDT:USDT",
+      "score": 63.63,
+      "confidence": 53.73,
+      "risk_grade": "C",
+      "uniqueness": 93.03,
+      "expected_move": {
+        "10_percent": 0.67,
+        "20_percent": 0.44,
+        "30_percent": 0.25
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": 0.61,
+        "trend": -10.0,
+        "volatility": 3.21,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "f7358f9c-c6fc-44b2-9a08-5d529ea121ea",
+      "timestamp": "2026-11-14T10:22:36.045128+00:00"
+    },
+    {
+      "symbol": "SXT/USDT:USDT",
+      "score": 49.71,
+      "confidence": 50.94,
+      "risk_grade": "C",
+      "uniqueness": 83.48,
+      "expected_move": {
+        "10_percent": 0.63,
+        "20_percent": 0.4,
+        "30_percent": 0.23
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "positive",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 3.31,
+        "open_interest": 10.8,
+        "relative_strength": -4.94,
+        "trend": 0.66,
+        "volatility": -4.11,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "5911a6ad-b43e-449e-8830-3bd991a55548",
+      "timestamp": "2026-11-14T10:22:22.826009+00:00"
+    },
+    {
+      "symbol": "CELR/USDT:USDT",
+      "score": 44.46,
+      "confidence": 49.89,
+      "risk_grade": "D",
+      "uniqueness": 79.24,
+      "expected_move": {
+        "10_percent": 0.61,
+        "20_percent": 0.39,
+        "30_percent": 0.22
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 3.92,
+        "open_interest": 10.8,
+        "relative_strength": -1.51,
+        "trend": -15.0,
+        "volatility": 2.25,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "9e515af8-a990-485c-8793-96af867dc8ce",
+      "timestamp": "2026-11-14T10:22:09.921646+00:00"
+    },
+    {
+      "symbol": "KMNO/USDT:USDT",
+      "score": 44.33,
+      "confidence": 49.87,
+      "risk_grade": "D",
+      "uniqueness": 79.85,
+      "expected_move": {
+        "10_percent": 0.61,
+        "20_percent": 0.39,
+        "30_percent": 0.22
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "positive",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 2.98,
+        "open_interest": 10.8,
+        "relative_strength": 0.04,
+        "trend": -15.0,
+        "volatility": 1.5,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "29b3ebbf-4f0f-449e-bb99-6c7782e95c92",
+      "timestamp": "2026-11-14T10:22:11.737744+00:00"
+    },
+    {
+      "symbol": "RENDER/USDT:USDT",
+      "score": 43.66,
+      "confidence": 49.73,
+      "risk_grade": "D",
+      "uniqueness": 78.33,
+      "expected_move": {
+        "10_percent": 0.61,
+        "20_percent": 0.39,
+        "30_percent": 0.22
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 1.89,
+        "open_interest": 10.8,
+        "relative_strength": -1.25,
+        "trend": -15.0,
+        "volatility": 3.21,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "bf0b4add-aff4-4d80-aae5-65bf94fc6150",
+      "timestamp": "2026-11-14T10:22:35.565171+00:00"
+    },
+    {
+      "symbol": "GTC/USDT:USDT",
+      "score": 42.24,
+      "confidence": 49.45,
+      "risk_grade": "D",
+      "uniqueness": 78.48,
+      "expected_move": {
+        "10_percent": 0.6,
+        "20_percent": 0.38,
+        "30_percent": 0.21
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "neutral",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 1.0,
+        "momentum": 7.95,
+        "open_interest": 10.8,
+        "relative_strength": -2.51,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "7cce633c-22b3-4443-88e7-372195535187",
+      "timestamp": "2026-11-14T10:22:22.448091+00:00"
+    },
+    {
+      "symbol": "AIXBT/USDT:USDT",
+      "score": 40.09,
+      "confidence": 49.02,
+      "risk_grade": "D",
+      "uniqueness": 72.88,
+      "expected_move": {
+        "10_percent": 0.6,
+        "20_percent": 0.38,
+        "30_percent": 0.21
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.69,
+        "open_interest": 10.8,
+        "relative_strength": -1.75,
+        "trend": -15.0,
+        "volatility": -3.66,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "1aee6a0b-3397-4e0c-a427-49ed217c3020",
+      "timestamp": "2026-11-14T10:22:10.711242+00:00"
+    },
+    {
+      "symbol": "IO/USDT:USDT",
+      "score": 38.66,
+      "confidence": 48.73,
+      "risk_grade": "D",
+      "uniqueness": 71.97,
+      "expected_move": {
+        "10_percent": 0.59,
+        "20_percent": 0.38,
+        "30_percent": 0.21
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.5,
+        "open_interest": 10.8,
+        "relative_strength": -3.67,
+        "trend": -15.0,
+        "volatility": -2.97,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "c596791e-201c-498d-9e47-e8508cccbbe9",
+      "timestamp": "2026-11-14T10:22:23.063124+00:00"
+    },
+    {
+      "symbol": "G/USDT:USDT",
+      "score": 37.78,
+      "confidence": 48.56,
+      "risk_grade": "D",
+      "uniqueness": 70.15,
+      "expected_move": {
+        "10_percent": 0.59,
+        "20_percent": 0.37,
+        "30_percent": 0.21
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 1.47,
+        "open_interest": 10.8,
+        "relative_strength": -3.04,
+        "trend": -15.0,
+        "volatility": -0.46,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "5cd3b9ed-3f4d-413d-8616-53996971b9fd",
+      "timestamp": "2026-11-14T10:22:37.067456+00:00"
+    },
+    {
+      "symbol": "C98/USDT:USDT",
+      "score": 37.61,
+      "confidence": 48.52,
+      "risk_grade": "D",
+      "uniqueness": 69.7,
+      "expected_move": {
+        "10_percent": 0.59,
+        "20_percent": 0.37,
+        "30_percent": 0.2
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 2.17,
+        "open_interest": 10.8,
+        "relative_strength": -2.19,
+        "trend": -15.0,
+        "volatility": -2.17,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "362d07c3-5ad8-4900-8606-21e09c2ed422",
+      "timestamp": "2026-11-14T10:22:23.964866+00:00"
+    },
+    {
+      "symbol": "DEXE/USDT:USDT",
+      "score": 35.82,
+      "confidence": 48.16,
+      "risk_grade": "D",
+      "uniqueness": 68.33,
+      "expected_move": {
+        "10_percent": 0.59,
+        "20_percent": 0.37,
+        "30_percent": 0.2
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 1.02,
+        "open_interest": 10.8,
+        "relative_strength": -3.63,
+        "trend": -15.0,
+        "volatility": -1.37,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "4c5e1b57-3afc-462a-a9e0-cf6a885039ff",
+      "timestamp": "2026-11-14T10:22:23.210722+00:00"
+    },
+    {
+      "symbol": "CELO/USDT:USDT",
+      "score": 29.92,
+      "confidence": 46.98,
+      "risk_grade": "D",
+      "uniqueness": 70.76,
+      "expected_move": {
+        "10_percent": 0.57,
+        "20_percent": 0.36,
+        "30_percent": 0.19
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.88,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "d0838e72-c523-4d6e-9a10-4fee3c8f1621",
+      "timestamp": "2026-11-14T10:22:36.514165+00:00"
+    },
+    {
+      "symbol": "BIO/USDT:USDT",
+      "score": 26.28,
+      "confidence": 46.26,
+      "risk_grade": "D",
+      "uniqueness": 68.79,
+      "expected_move": {
+        "10_percent": 0.56,
+        "20_percent": 0.35,
+        "30_percent": 0.19
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -4.04,
+        "trend": -15.0,
+        "volatility": -1.49,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "7e5bd1d4-7f40-495d-9017-1cbd63ee09c0",
+      "timestamp": "2026-11-14T10:22:35.154449+00:00"
+    },
+    {
+      "symbol": "SAGA/USDT:USDT",
+      "score": 26.27,
+      "confidence": 46.25,
+      "risk_grade": "D",
+      "uniqueness": 68.33,
+      "expected_move": {
+        "10_percent": 0.56,
+        "20_percent": 0.35,
+        "30_percent": 0.19
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.59,
+        "trend": -15.0,
+        "volatility": -1.94,
+        "volume": -10.0
+      },
+      "passed": true,
+      "setup_id": "92075475-fab6-4417-89b5-d6e1f83d7a3c",
+      "timestamp": "2026-11-14T10:22:10.069280+00:00"
+    },
+    {
+      "symbol": "PUNDIX/USDT:USDT",
+      "score": 31.39,
+      "confidence": 71.28,
+      "risk_grade": "C",
+      "uniqueness": 66.97,
+      "expected_move": {
+        "10_percent": 0.61,
+        "20_percent": 0.39,
+        "30_percent": 0.22
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "negative",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": -8.0,
+        "open_interest": 10.8,
+        "relative_strength": -3.44,
+        "trend": -15.0,
+        "volatility": -4.23,
+        "volume": -2.74
+      },
+      "passed": false,
+      "setup_id": "da5afa1f-4f6b-4cc2-b8e9-2634bfeef519",
+      "timestamp": "2026-11-14T10:22:10.386684+00:00"
+    },
+    {
+      "symbol": "CTK/USDT:USDT",
+      "score": 38.5,
+      "confidence": 48.7,
+      "risk_grade": "D",
+      "uniqueness": 75.3,
+      "expected_move": {
+        "10_percent": 0.59,
+        "20_percent": 0.37,
+        "30_percent": 0.21
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 1.02,
+        "open_interest": 10.8,
+        "relative_strength": -2.32,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -10.0
+      },
+      "passed": false,
+      "setup_id": "089e1621-cb94-4c89-9e14-ef90642be022",
+      "timestamp": "2026-11-14T10:22:10.857384+00:00"
+    },
+    {
+      "symbol": "MTL/USDT:USDT",
+      "score": 56.12,
+      "confidence": 76.22,
+      "risk_grade": "B",
+      "uniqueness": 80.15,
+      "expected_move": {
+        "10_percent": 0.71,
+        "20_percent": 0.47,
+        "30_percent": 0.28
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 6.13,
+        "open_interest": 10.8,
+        "relative_strength": -1.74,
+        "trend": -15.0,
+        "volatility": -0.0,
+        "volume": 1.92
+      },
+      "passed": false,
+      "setup_id": "c62ef56e-80f0-4970-9659-bec32c59df15",
+      "timestamp": "2026-11-14T10:22:10.916800+00:00"
+    },
+    {
+      "symbol": "DOLO/USDT:USDT",
+      "score": 69.24,
+      "confidence": 78.85,
+      "risk_grade": "B",
+      "uniqueness": 95.3,
+      "expected_move": {
+        "10_percent": 0.77,
+        "20_percent": 0.52,
+        "30_percent": 0.31
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 7.37,
+        "open_interest": 10.8,
+        "relative_strength": -0.45,
+        "trend": -15.0,
+        "volatility": 11.14,
+        "volume": 1.37
+      },
+      "passed": false,
+      "setup_id": "33d92eed-d256-4a44-b591-fefb71aa182b",
+      "timestamp": "2026-11-14T10:22:11.835158+00:00"
+    },
+    {
+      "symbol": "CGPT/USDT:USDT",
+      "score": 52.29,
+      "confidence": 75.46,
+      "risk_grade": "C",
+      "uniqueness": 79.39,
+      "expected_move": {
+        "10_percent": 0.7,
+        "20_percent": 0.46,
+        "30_percent": 0.27
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.68,
+        "open_interest": 10.8,
+        "relative_strength": -2.21,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -0.98
+      },
+      "passed": false,
+      "setup_id": "e9de0925-9aad-403e-ba60-74f704a35053",
+      "timestamp": "2026-11-14T10:22:12.189056+00:00"
+    },
+    {
+      "symbol": "HIVE/USDT:USDT",
+      "score": 48.45,
+      "confidence": 74.69,
+      "risk_grade": "C",
+      "uniqueness": 75.61,
+      "expected_move": {
+        "10_percent": 0.68,
+        "20_percent": 0.44,
+        "30_percent": 0.26
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 4.92,
+        "open_interest": 10.8,
+        "relative_strength": -2.01,
+        "trend": -15.0,
+        "volatility": -1.26,
+        "volume": -3.0
+      },
+      "passed": false,
+      "setup_id": "4c40e040-4d6a-401d-8c68-9bf8d3cbd318",
+      "timestamp": "2026-11-14T10:22:22.667650+00:00"
+    },
+    {
+      "symbol": "ASR/USDT:USDT",
+      "score": 60.53,
+      "confidence": 53.11,
+      "risk_grade": "C",
+      "uniqueness": 90.3,
+      "expected_move": {
+        "10_percent": 0.66,
+        "20_percent": 0.43,
+        "30_percent": 0.25
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.38,
+        "trend": -6.52,
+        "volatility": -1.37,
+        "volume": -10.0
+      },
+      "passed": false,
+      "setup_id": "34abb7d2-ba59-4321-81ac-cfaab6d15bdd",
+      "timestamp": "2026-11-14T10:22:23.338158+00:00"
+    },
+    {
+      "symbol": "IOTX/USDT:USDT",
+      "score": 47.7,
+      "confidence": 74.54,
+      "risk_grade": "C",
+      "uniqueness": 74.7,
+      "expected_move": {
+        "10_percent": 0.68,
+        "20_percent": 0.44,
+        "30_percent": 0.26
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 6.7,
+        "open_interest": 10.8,
+        "relative_strength": -2.62,
+        "trend": -15.0,
+        "volatility": -3.43,
+        "volume": -2.75
+      },
+      "passed": false,
+      "setup_id": "8e7ffdd7-93f0-4f47-a749-1298831f387a",
+      "timestamp": "2026-11-14T10:22:23.466489+00:00"
+    },
+    {
+      "symbol": "MEW/USDT:USDT",
+      "score": 44.7,
+      "confidence": 73.94,
+      "risk_grade": "C",
+      "uniqueness": 73.33,
+      "expected_move": {
+        "10_percent": 0.67,
+        "20_percent": 0.43,
+        "30_percent": 0.25
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 3.77,
+        "open_interest": 10.8,
+        "relative_strength": -2.85,
+        "trend": -15.0,
+        "volatility": -4.11,
+        "volume": -1.91
+      },
+      "passed": false,
+      "setup_id": "69f188b7-4cce-4845-9c0b-3d6b30858419",
+      "timestamp": "2026-11-14T10:22:24.081900+00:00"
+    },
+    {
+      "symbol": "LISTA/USDT:USDT",
+      "score": 61.14,
+      "confidence": 77.23,
+      "risk_grade": "B",
+      "uniqueness": 89.55,
+      "expected_move": {
+        "10_percent": 0.74,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -1.22,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -2.45
+      },
+      "passed": false,
+      "setup_id": "2b9b2851-760d-4501-8ee7-5d974fc2342f",
+      "timestamp": "2026-11-14T10:22:24.593097+00:00"
+    },
+    {
+      "symbol": "1000XEC/USDT:USDT",
+      "score": 36.18,
+      "confidence": 48.24,
+      "risk_grade": "D",
+      "uniqueness": 73.03,
+      "expected_move": {
+        "10_percent": 0.59,
+        "20_percent": 0.37,
+        "30_percent": 0.2
+      },
+      "expected_duration": "24-72h",
+      "market_regime": "bear",
+      "contradictions": [
+        "conflicting_signals_within_participation"
+      ],
+      "fingerprint": {
+        "funding": "neutral",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "negative"
+      },
+      "feature_scores": {
+        "funding": 1.0,
+        "momentum": 5.31,
+        "open_interest": 10.8,
+        "relative_strength": -2.49,
+        "trend": -15.0,
+        "volatility": -3.43,
+        "volume": -10.0
+      },
+      "passed": false,
+      "setup_id": "b4fc9c17-8843-496b-843d-7fcac8ec7880",
+      "timestamp": "2026-11-14T10:22:35.449514+00:00"
+    },
+    {
+      "symbol": "OG/USDT:USDT",
+      "score": 60.47,
+      "confidence": 77.09,
+      "risk_grade": "B",
+      "uniqueness": 88.79,
+      "expected_move": {
+        "10_percent": 0.73,
+        "20_percent": 0.49,
+        "30_percent": 0.29
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 3.31,
+        "open_interest": 10.8,
+        "relative_strength": -2.52,
+        "trend": -15.0,
+        "volatility": -0.11,
+        "volume": 10.0
+      },
+      "passed": false,
+      "setup_id": "4059ce3e-df36-4023-91ac-7c2e56d27123",
+      "timestamp": "2026-11-14T10:22:35.817024+00:00"
+    },
+    {
+      "symbol": "ALCH/USDT:USDT",
+      "score": 63.28,
+      "confidence": 77.66,
+      "risk_grade": "B",
+      "uniqueness": 92.58,
+      "expected_move": {
+        "10_percent": 0.75,
+        "20_percent": 0.5,
+        "30_percent": 0.3
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 6.25,
+        "open_interest": 10.8,
+        "relative_strength": -2.77,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": 10.0
+      },
+      "passed": false,
+      "setup_id": "d1a6885d-0aff-466f-ab24-3b6b39689b7f",
+      "timestamp": "2026-11-14T10:22:36.216301+00:00"
+    },
+    {
+      "symbol": "SONIC/USDT:USDT",
+      "score": 50.13,
+      "confidence": 75.03,
+      "risk_grade": "C",
+      "uniqueness": 78.48,
+      "expected_move": {
+        "10_percent": 0.69,
+        "20_percent": 0.45,
+        "30_percent": 0.26
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "neutral",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 4.37,
+        "open_interest": 10.8,
+        "relative_strength": -2.01,
+        "trend": -15.0,
+        "volatility": 0.0,
+        "volume": -2.03
+      },
+      "passed": false,
+      "setup_id": "dbdf53c7-b378-4fbe-8bae-975f9c65dbbd",
+      "timestamp": "2026-11-14T10:22:37.210936+00:00"
+    },
+    {
+      "symbol": "CVC/USDT:USDT",
+      "score": 55.22,
+      "confidence": 76.04,
+      "risk_grade": "B",
+      "uniqueness": 84.55,
+      "expected_move": {
+        "10_percent": 0.71,
+        "20_percent": 0.47,
+        "30_percent": 0.28
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "positive",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 15.0,
+        "open_interest": 10.8,
+        "relative_strength": -2.92,
+        "trend": -15.0,
+        "volatility": -3.66,
+        "volume": -3.0
+      },
+      "passed": false,
+      "setup_id": "b0dae59f-58e5-4a73-9211-c8820b0f3c12",
+      "timestamp": "2026-11-14T10:22:37.351134+00:00"
+    },
+    {
+      "symbol": "ARPA/USDT:USDT",
+      "score": 43.4,
+      "confidence": 73.68,
+      "risk_grade": "C",
+      "uniqueness": 77.88,
+      "expected_move": {
+        "10_percent": 0.66,
+        "20_percent": 0.43,
+        "30_percent": 0.25
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "neutral",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "negative",
+        "volume": "neutral"
+      },
+      "feature_scores": {
+        "funding": 1.0,
+        "momentum": 5.78,
+        "open_interest": 10.8,
+        "relative_strength": -1.95,
+        "trend": -15.0,
+        "volatility": -4.23,
+        "volume": -3.0
+      },
+      "passed": false,
+      "setup_id": "cbb0a2d1-0a86-4c5f-a8b8-65031b657220",
+      "timestamp": "2026-11-14T10:22:47.466548+00:00"
+    },
+    {
+      "symbol": "FRAX/USDT:USDT",
+      "score": 71.02,
+      "confidence": 79.2,
+      "risk_grade": "B",
+      "uniqueness": 95.76,
+      "expected_move": {
+        "10_percent": 0.78,
+        "20_percent": 0.52,
+        "30_percent": 0.32
+      },
+      "expected_duration": "8-24h",
+      "market_regime": "bear",
+      "contradictions": [],
+      "fingerprint": {
+        "funding": "positive",
+        "momentum": "neutral",
+        "open_interest": "positive",
+        "relative_strength": "negative",
+        "trend": "negative",
+        "volatility": "positive",
+        "volume": "positive"
+      },
+      "feature_scores": {
+        "funding": 4.0,
+        "momentum": 5.87,
+        "open_interest": 10.8,
+        "relative_strength": -1.61,
+        "trend": -15.0,
+        "volatility": 6.96,
+        "volume": 10.0
+      },
+      "passed": false,
+      "setup_id": "aefed412-4f74-44e0-9ce1-047f2408be94",
+      "timestamp": "2026-11-14T10:25:29.540249+00:00"
+    }
+  ]
+}

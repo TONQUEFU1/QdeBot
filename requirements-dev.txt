@@ -1,0 +1,9 @@
+# QDE V1 - development/testing dependencies only.
+# Not required to run `python main.py` or any plugin module - only to
+# run the test suite (tests/).
+#
+# Install with: pip install -r requirements.txt -r requirements-dev.txt --break-system-packages
+
+-r requirements.txt
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

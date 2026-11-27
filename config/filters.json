@@ -1,0 +1,11 @@
+{
+  "min_quote_volume": 1000000,
+  "max_spread": 0.005,
+  "min_liquidity_score": 0.0,
+  "required_candles": {
+    "15m": 200,
+    "1h": 250,
+    "4h": 200,
+    "1d": 100
+  }
+}

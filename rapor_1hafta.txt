@@ -1,0 +1,119 @@
+2026-08-15 15:19:33 | INFO     | qde.__main__ | Scan started (run_id=d79ddccb-71dc-4b24-aab2-c512c70d1809)
+2026-08-15 15:19:35 | INFO     | qde.__main__ | Symbol universe discovered: 527 symbols
+2026-08-15 15:19:41 | INFO     | qde.__main__ | Market regime detected: bear
+------------------------------------------------------
+QDE Quant Engine
+
+Market: Binance Futures
+Scanning 527 symbols...
+
+2026-08-15 15:25:59 | INFO     | qde.__main__ | Scan finished (run_id=d79ddccb-71dc-4b24-aab2-c512c70d1809) in 385.56s - 407/527 passed
+
+======================================================
+QDE Scan Report
+======================================================
+
+Coins Scanned      : 527
+Qualified          : 407
+Rejected           : 120
+Institutional Grade: 0
+Average Score      : 72.75
+Average Confidence : 73.18
+Scan Duration      : 385.56 sec
+
+------------------------------------------------------
+
+Top Signals
+
+1)
+TRADOOR/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +7.7
+
+2)
+CATI/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +7.4
+
+3)
+FIGHT/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +7.2
+
+4)
+BOME/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +6.8
+
+5)
+IRYS/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +6.2
+
+6)
+THE/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +6.1
+
+7)
+DIA/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +6.1
+
+8)
+AGLD/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.5
+
+9)
+PTB/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.4
+
+10)
+AGT/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.4
+
+11)
+AIA/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.4
+
+12)
+AWE/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.4
+
+13)
+PROMPT/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.3
+
+14)
+JST/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.2
+
+15)
+BSV/USDT:USDT
+Confidence 85
+Score      100
+TieBreak   +5.2
+
+======================================================
+2026-08-15 15:25:59 | INFO     | qde.__main__ | Reports written: json=/storage/emulated/0/BreakoutScanner/qde/reports/qde_scan_20260815T122559Z_d79ddccb-71dc-4b24-aab2-c512c70d1809.json csv=/storage/emulated/0/BreakoutScanner/qde/reports/qde_scan_20260815T122559Z_d79ddccb-71dc-4b24-aab2-c512c70d1809.csv

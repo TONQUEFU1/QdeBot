@@ -1,0 +1,1931 @@
+
+===== DOSYA: indicators/__init__.py =====
+"""
+QDE V1 - indicators package
+
+Every indicator is an isolated plugin (Document 06 SS6). Indicators
+never import each other and never talk to the exchange, cache, or
+storage directly - they only transform MarketData -> Feature.
+
+Concrete indicators self-register via @register_indicator
+(indicators.registry) when their module is imported by
+IndicatorRegistry.discover().
+"""
+
+from indicators.base import BaseIndicator
+from indicators.registry import IndicatorRegistry, register_indicator
+
+__all__ = ["BaseIndicator", "IndicatorRegistry", "register_indicator"]
+
+
+===== DOSYA: indicators/base.py =====
+"""
+QDE V1 - indicators/base.py
+
+Plugin contract for every indicator (Document 06 SS6).
+
+An indicator:
+    - Receives the unified MarketData object.
+    - Calculates exactly one feature.
+    - Returns a structured Feature.
+    - Never modifies global state, never calls the exchange or cache
+      directly, never talks to another indicator.
+
+Dependency level: 1 (depends on models.market_data, models.feature).
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+from models.feature import Feature, FeatureFamily
+from models.market_data import MarketData
+
+
+class BaseIndicator(ABC):
+    """Base class every concrete indicator must subclass.
+
+    Class attributes `name` and `family` must be overridden - they are
+    used by the Scoring Engine (weights lookup) and the Confidence
+    Engine (family-agreement matrix, Document 04 SS4) respectively.
+    """
+
+    name: str = ""
+    family: FeatureFamily = FeatureFamily.STRUCTURE
+
+    @abstractmethod
+    def calculate(self, market_data: MarketData) -> Feature:
+        """Compute this indicator's Feature for the given symbol.
+
+        Must never raise for merely missing/insufficient data - return
+        a neutral/unavailable Feature instead (Document 03 SS13:
+        missing feature -> ignored, confidence reduced, not crash).
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
+        """Shared normalization helper (Document 03 SS12)."""
+        return max(lo, min(hi, value))
+
+    def _unavailable(self, reason: str) -> Feature:
+        """Standard 'missing data' Feature every subclass can return
+        instead of crashing.
+        """
+        from models.feature import FeatureStatus
+
+        return Feature(
+            name=self.name,
+            value=0.0,
+            score=0.0,
+            status=FeatureStatus.NEUTRAL,
+            family=self.family,
+            metadata={"reason": reason, "available": False},
+        )
+
+
+===== DOSYA: indicators/funding.py =====
+"""
+QDE V1 - indicators/funding.py
+
+Funding indicator (Document 03 SS3.H). Used as a positioning filter -
+never dominates the score, only adjusts confidence/quality
+(Document 03 SS3.H: "Funding should never dominate the score").
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_HEALTHY_THRESHOLD = 0.0001   # |rate| at or below this = healthy/neutral positioning
+_CROWDED_THRESHOLD = 0.0005   # |rate| above this = overcrowded positioning
+
+
+@register_indicator
+class FundingIndicator(BaseIndicator):
+    name = "funding"
+    family = FeatureFamily.PARTICIPATION
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        rate = market_data.funding.get("rate")
+        if rate is None:
+            return self._unavailable("funding_rate_missing")
+
+        abs_rate = abs(rate)
+
+        if abs_rate <= _HEALTHY_THRESHOLD:
+            score, status = 8.0, FeatureStatus.POSITIVE
+        elif abs_rate <= _CROWDED_THRESHOLD:
+            score, status = 2.0, FeatureStatus.NEUTRAL
+        else:
+            # Deliberately capped low magnitude - funding is a soft
+            # positioning signal, not a dominant score driver.
+            score, status = -10.0, FeatureStatus.NEGATIVE
+
+        basis_points = rate * 10_000
+        return Feature(
+            name=self.name,
+            value=self._clamp(50.0 + basis_points, lo=0.0, hi=100.0),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "rate": rate,
+                "basis_points": basis_points,
+                "crowded_long": rate > _CROWDED_THRESHOLD,
+                "crowded_short": rate < -_CROWDED_THRESHOLD,
+            },
+        )
+
+
+===== DOSYA: indicators/momentum.py =====
+"""
+QDE V1 - indicators/momentum.py
+
+Momentum Quality indicator (Document 03 SS3.B). Evaluates whether
+momentum is starting rather than ending, via RSI on the 15m timeframe
+(Document 02 SS7: momentum uses 15m).
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_TIMEFRAME = "15m"
+_RSI_PERIOD = 14
+
+# Healthy RSI range: momentum is beginning, not already exhausted.
+_HEALTHY_LOW, _HEALTHY_HIGH = 45.0, 65.0
+_OVEREXTENDED = 75.0
+_WEAK = 30.0
+
+
+def _rsi(values: list[float], period: int = 14) -> float | None:
+    if len(values) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, len(values)):
+        change = values[i] - values[i - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+@register_indicator
+class MomentumIndicator(BaseIndicator):
+    name = "momentum"
+    family = FeatureFamily.MOMENTUM
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_TIMEFRAME)
+        if tf is None:
+            return self._unavailable("timeframe_missing")
+
+        closes = tf.closes()
+        rsi = _rsi(closes, _RSI_PERIOD)
+        if rsi is None:
+            return self._unavailable("insufficient_candle_history")
+
+        if _HEALTHY_LOW <= rsi <= _HEALTHY_HIGH:
+            score, status = 15.0, FeatureStatus.POSITIVE
+        elif rsi >= _OVEREXTENDED:
+            score, status = -12.0, FeatureStatus.NEGATIVE
+        elif rsi <= _WEAK:
+            score, status = -8.0, FeatureStatus.NEGATIVE
+        else:
+            # Transitional zone: mild positive/negative lean toward the
+            # healthy band without full credit.
+            distance = min(abs(rsi - _HEALTHY_LOW), abs(rsi - _HEALTHY_HIGH))
+            score = max(0.0, 8.0 - distance * 0.5)
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(rsi),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={"timeframe": tf.timeframe, "rsi": rsi},
+        )
+
+
+===== DOSYA: indicators/open_interest.py =====
+"""
+QDE V1 - indicators/open_interest.py
+
+Open Interest indicator (Document 03 SS3.G). Measures futures
+participation.
+
+V1 data-availability note:
+    Document 03 SS3.G describes OI trend states (increasing / stable /
+    explosive growth / collapse), which require a historical OI series.
+    MarketData carries only the current OI snapshot (Document 02 SS4)
+    - historical OI tracking is a Research Engine / database concern
+    (Document 05 SS4, SS17) that indicators intentionally cannot query
+    (indicators must not depend on storage - Document 06 SS3 dependency
+    rules). For V1, this indicator instead computes OI notional value
+    (open interest amount x mark price) relative to 24h quote volume,
+    a legitimate single-snapshot participation-depth proxy. True
+    OI-trend scoring (increasing/collapsing) is a tracked V2 item once
+    OI history is persisted per symbol.
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_HIGH_INTENSITY = 0.15   # OI notional / 24h quote volume
+_LOW_INTENSITY = 0.02
+
+
+@register_indicator
+class OpenInterestIndicator(BaseIndicator):
+    name = "open_interest"
+    family = FeatureFamily.PARTICIPATION
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        oi_amount = market_data.open_interest.get("value")
+        quote_volume = market_data.quote_volume()
+        mark_price = market_data.mark_price.get("mark_price") or market_data.ticker.get("last")
+
+        if oi_amount is None or not quote_volume or not mark_price:
+            return self._unavailable("oi_or_volume_or_price_missing")
+
+        oi_notional = oi_amount * mark_price
+        intensity = oi_notional / quote_volume
+
+        if intensity >= _HIGH_INTENSITY:
+            score, status = 12.0, FeatureStatus.POSITIVE
+        elif intensity <= _LOW_INTENSITY:
+            score, status = -6.0, FeatureStatus.NEGATIVE
+        else:
+            score = self._clamp(
+                (intensity - _LOW_INTENSITY) / (_HIGH_INTENSITY - _LOW_INTENSITY) * 12.0,
+                lo=-6.0,
+                hi=12.0,
+            )
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(intensity * 500.0),  # scaled into a 0-100-ish range
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "oi_amount": oi_amount,
+                "oi_notional": oi_notional,
+                "quote_volume": quote_volume,
+                "intensity": intensity,
+                "reason": "snapshot_only_v1_no_history_yet",
+            },
+        )
+
+
+===== DOSYA: indicators/registry.py =====
+"""
+QDE V1 - indicators/registry.py
+
+Indicator plugin registry (Document 09 SS11 addendum, mandatory frozen
+decision). ScoringEngine must never import a concrete indicator module
+by name - it only calls IndicatorRegistry.get_all().
+
+Adding a new indicator requires only:
+    1. Create the new indicator module in indicators/.
+    2. Decorate its class with @register_indicator.
+    3. Add a weight for it in config/weights.json.
+No other engine requires modification (Document 06 SS13).
+
+Dependency level: 2 (depends on indicators.base; discover() dynamically
+imports sibling indicator modules at call time to avoid import cycles
+with indicators/__init__.py).
+"""
+
+from __future__ import annotations
+
+import importlib
+import pkgutil
+from typing import Type
+
+from indicators.base import BaseIndicator
+
+# Module-level registry populated by the @register_indicator decorator
+# as each indicator module is imported.
+_REGISTRY: dict[str, Type[BaseIndicator]] = {}
+
+_NON_INDICATOR_MODULES = {"base", "registry", "__init__"}
+
+
+def register_indicator(cls: Type[BaseIndicator]) -> Type[BaseIndicator]:
+    """Class decorator. Registers `cls` under its `name` attribute.
+
+    Example:
+        @register_indicator
+        class TrendIndicator(BaseIndicator):
+            name = "trend"
+            family = FeatureFamily.TREND
+            def calculate(self, market_data): ...
+    """
+    if not cls.name:
+        raise ValueError(f"{cls.__name__} must define a non-empty 'name' attribute")
+    if cls.name in _REGISTRY and _REGISTRY[cls.name] is not cls:
+        raise ValueError(f"Duplicate indicator name registered: '{cls.name}'")
+    _REGISTRY[cls.name] = cls
+    return cls
+
+
+class IndicatorRegistry:
+    """Holds one instantiated indicator per registered class.
+
+    ScoringEngine consumes `get_all()` and never knows the concrete
+    indicator class names.
+    """
+
+    def __init__(self) -> None:
+        self._instances: list[BaseIndicator] = []
+
+    def register(self, indicator: BaseIndicator) -> None:
+        self._instances.append(indicator)
+
+    def get_all(self) -> list[BaseIndicator]:
+        return list(self._instances)
+
+    def get_by_name(self, name: str) -> BaseIndicator | None:
+        for indicator in self._instances:
+            if indicator.name == name:
+                return indicator
+        return None
+
+    def names(self) -> list[str]:
+        return [i.name for i in self._instances]
+
+    @classmethod
+    def discover(cls) -> "IndicatorRegistry":
+        """Import every module in the indicators package so that every
+        @register_indicator decorator runs, then build a registry with
+        one instance per registered class.
+
+        The import of the `indicators` package happens lazily here
+        (not at indicators/registry.py's own import time) to avoid a
+        circular import between indicators/__init__.py and this module.
+        """
+        import indicators as indicators_package
+
+        for _, module_name, _ in pkgutil.iter_modules(indicators_package.__path__):
+            if module_name in _NON_INDICATOR_MODULES:
+                continue
+            importlib.import_module(f"indicators.{module_name}")
+
+        registry = cls()
+        for indicator_cls in _REGISTRY.values():
+            registry.register(indicator_cls())
+        return registry
+
+
+===== DOSYA: indicators/relative_strength.py =====
+"""
+QDE V1 - indicators/relative_strength.py
+
+Relative Strength indicator (Document 03 SS3.F) - "one of the highest
+priority features": does the coin outperform BTC?
+
+V1 data-availability note:
+    BaseIndicator.calculate() receives only the target symbol's
+    MarketData (Document 06 SS6 plugin isolation - indicators never
+    call other indicators or the exchange directly). To compare
+    against BTC without violating that isolation, this indicator reads
+    an optional `btc_percentage` key that data.collector may attach to
+    `market_data.ticker` (the 24h % change of BTCUSDT for the same
+    scan). If absent, the indicator falls back to the symbol's own 24h
+    change as a lower-confidence proxy rather than crashing or
+    fabricating a comparison (Document 03 SS13: missing feature ->
+    reduced confidence, not crash). Wiring the BTC baseline into every
+    ticker is a collector-level enhancement tracked for the next
+    implementation pass and does not require any change to this
+    indicator's interface.
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+
+@register_indicator
+class RelativeStrengthIndicator(BaseIndicator):
+    name = "relative_strength"
+    family = FeatureFamily.MARKET
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        percentage = market_data.ticker.get("percentage")
+        if percentage is None:
+            return self._unavailable("ticker_percentage_missing")
+
+        btc_percentage = market_data.ticker.get("btc_percentage")
+
+        if btc_percentage is not None:
+            rs = percentage - btc_percentage
+            score = max(-15.0, min(20.0, rs))
+            status = (
+                FeatureStatus.POSITIVE
+                if rs > 1.0
+                else FeatureStatus.NEGATIVE
+                if rs < -1.0
+                else FeatureStatus.NEUTRAL
+            )
+            value = self._clamp(50.0 + rs)
+            metadata = {
+                "symbol_change_pct": percentage,
+                "btc_change_pct": btc_percentage,
+                "relative_strength_pct": rs,
+                "baseline": "btc",
+            }
+        else:
+            # Lower-confidence fallback: symbol's own momentum only.
+            score = max(-5.0, min(5.0, percentage / 2.0))
+            status = (
+                FeatureStatus.POSITIVE
+                if percentage > 0
+                else FeatureStatus.NEGATIVE
+                if percentage < 0
+                else FeatureStatus.NEUTRAL
+            )
+            value = self._clamp(50.0 + percentage)
+            metadata = {
+                "symbol_change_pct": percentage,
+                "baseline": "self_only_v1_fallback",
+            }
+
+        return Feature(
+            name=self.name,
+            value=value,
+            score=score,
+            status=status,
+            family=self.family,
+            metadata=metadata,
+        )
+
+
+===== DOSYA: indicators/trend.py =====
+"""
+QDE V1 - indicators/trend.py
+
+Trend Quality indicator (Document 03 SS3.A). Evaluates higher-timeframe
+EMA alignment (Document 02 SS7: trend uses 4H).
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_PRIMARY_TIMEFRAME = "4h"
+_FALLBACK_TIMEFRAME = "1h"
+_MIN_CANDLES = 200
+
+
+def _ema(values: list[float], period: int) -> list[float]:
+    """Standard exponential moving average, seeded with the first value."""
+    if not values:
+        return []
+    k = 2.0 / (period + 1)
+    result = [values[0]]
+    for v in values[1:]:
+        result.append(v * k + result[-1] * (1 - k))
+    return result
+
+
+@register_indicator
+class TrendIndicator(BaseIndicator):
+    name = "trend"
+    family = FeatureFamily.TREND
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_PRIMARY_TIMEFRAME) or market_data.get_timeframe(
+            _FALLBACK_TIMEFRAME
+        )
+        if tf is None or len(tf.candles) < _MIN_CANDLES:
+            return self._unavailable("insufficient_candle_history")
+
+        closes = tf.closes()
+        ema20 = _ema(closes, 20)[-1]
+        ema50 = _ema(closes, 50)[-1]
+        ema200 = _ema(closes, 200)[-1]
+        price = closes[-1]
+
+        bullish_alignment = price > ema20 > ema50 > ema200
+        bearish_alignment = price < ema20 < ema50 < ema200
+
+        if bullish_alignment:
+            score, status, value = 20.0, FeatureStatus.POSITIVE, 95.0
+        elif bearish_alignment:
+            score, status, value = -15.0, FeatureStatus.NEGATIVE, 5.0
+        else:
+            pct_from_ema200 = ((price - ema200) / ema200) * 100 if ema200 else 0.0
+            score = max(-10.0, min(10.0, pct_from_ema200))
+            status = (
+                FeatureStatus.POSITIVE
+                if pct_from_ema200 > 0
+                else FeatureStatus.NEGATIVE
+                if pct_from_ema200 < 0
+                else FeatureStatus.NEUTRAL
+            )
+            value = self._clamp(50.0 + pct_from_ema200)
+
+        return Feature(
+            name=self.name,
+            value=value,
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "timeframe": tf.timeframe,
+                "ema20": ema20,
+                "ema50": ema50,
+                "ema200": ema200,
+                "price": price,
+                "bullish_alignment": bullish_alignment,
+                "bearish_alignment": bearish_alignment,
+            },
+        )
+
+
+===== DOSYA: indicators/volatility.py =====
+"""
+QDE V1 - indicators/volatility.py
+
+Volatility Compression indicator (Document 03 SS3.C). Detects stored
+energy via Bollinger Band width percentile rank on the 1h timeframe.
+Longer, cleaner compressions (low percentile = tight bands relative to
+recent history) receive higher scores (Document 03 SS3.C).
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_TIMEFRAME = "1h"
+_BB_PERIOD = 20
+_MIN_WIDTH_SAMPLES = 30  # minimum rolling window count for a meaningful percentile
+
+_TIGHT_PERCENTILE = 40.0   # below this => genuine compression
+_LOOSE_PERCENTILE = 80.0   # above this => expanded / no compression
+
+
+def _rolling_band_widths(closes: list[float], period: int) -> list[float]:
+    """Bollinger Band width = (upper - lower) / middle for every window
+    of `period` closes, computed across the full closes series.
+    """
+    widths = []
+    for i in range(period, len(closes) + 1):
+        window = closes[i - period : i]
+        sma = sum(window) / period
+        variance = sum((x - sma) ** 2 for x in window) / period
+        std = variance ** 0.5
+        upper = sma + 2 * std
+        lower = sma - 2 * std
+        width = (upper - lower) / sma if sma else 0.0
+        widths.append(width)
+    return widths
+
+
+def _percentile_rank(value: float, population: list[float]) -> float:
+    """Percentile rank of `value` within `population`, 0-100."""
+    if len(population) <= 1:
+        return 50.0
+    sorted_pop = sorted(population)
+    below = sum(1 for v in sorted_pop if v < value)
+    return (below / (len(sorted_pop) - 1)) * 100.0 if len(sorted_pop) > 1 else 50.0
+
+
+@register_indicator
+class VolatilityIndicator(BaseIndicator):
+    name = "volatility"
+    family = FeatureFamily.STRUCTURE
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_TIMEFRAME)
+        if tf is None:
+            return self._unavailable("timeframe_missing")
+
+        closes = tf.closes()
+        widths = _rolling_band_widths(closes, _BB_PERIOD)
+        if len(widths) < _MIN_WIDTH_SAMPLES:
+            return self._unavailable("insufficient_candle_history")
+
+        current_width = widths[-1]
+        percentile = _percentile_rank(current_width, widths)
+
+        if percentile <= _TIGHT_PERCENTILE:
+            # Tighter compression than most of recent history -> reward,
+            # scaled so the tightest readings score highest.
+            score = ((_TIGHT_PERCENTILE - percentile) / _TIGHT_PERCENTILE) * 15.0
+            status = FeatureStatus.POSITIVE
+        elif percentile >= _LOOSE_PERCENTILE:
+            score = -((percentile - _LOOSE_PERCENTILE) / (100 - _LOOSE_PERCENTILE)) * 8.0
+            status = FeatureStatus.NEGATIVE
+        else:
+            score = 0.0
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(percentile),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={
+                "timeframe": tf.timeframe,
+                "band_width": current_width,
+                "percentile": percentile,
+            },
+        )
+
+
+===== DOSYA: indicators/volume.py =====
+"""
+QDE V1 - indicators/volume.py
+
+Volume Quality indicator (Document 03 SS3.E). Measures participation
+via the current candle's volume relative to its recent average
+(volume expansion), on the 15m timeframe.
+
+Dependency level: 3 (depends on indicators.base, indicators.registry,
+models.feature, models.market_data).
+"""
+
+from __future__ import annotations
+
+from indicators.base import BaseIndicator
+from indicators.registry import register_indicator
+from models.feature import Feature, FeatureFamily, FeatureStatus
+from models.market_data import MarketData
+
+_TIMEFRAME = "15m"
+_LOOKBACK = 20  # candles used to compute the baseline average
+
+_STRONG_EXPANSION = 2.0
+_MILD_EXPANSION = 1.3
+_WEAK_RATIO = 0.6
+
+
+@register_indicator
+class VolumeIndicator(BaseIndicator):
+    name = "volume"
+    family = FeatureFamily.PARTICIPATION
+
+    def calculate(self, market_data: MarketData) -> Feature:
+        tf = market_data.get_timeframe(_TIMEFRAME)
+        if tf is None:
+            return self._unavailable("timeframe_missing")
+
+        volumes = tf.volumes()
+        if len(volumes) < _LOOKBACK + 1:
+            return self._unavailable("insufficient_candle_history")
+
+        current = volumes[-1]
+        baseline_window = volumes[-(_LOOKBACK + 1) : -1]
+        average = sum(baseline_window) / len(baseline_window)
+        if average <= 0:
+            return self._unavailable("zero_baseline_volume")
+
+        ratio = current / average
+
+        if ratio >= _STRONG_EXPANSION:
+            score, status = 18.0, FeatureStatus.POSITIVE
+        elif ratio >= _MILD_EXPANSION:
+            score, status = 10.0, FeatureStatus.POSITIVE
+        elif ratio <= _WEAK_RATIO:
+            score, status = -10.0, FeatureStatus.NEGATIVE
+        else:
+            score = max(-3.0, min(3.0, (ratio - 1.0) * 10.0))
+            status = FeatureStatus.NEUTRAL
+
+        return Feature(
+            name=self.name,
+            value=self._clamp(ratio * 50.0),
+            score=score,
+            status=status,
+            family=self.family,
+            metadata={"timeframe": tf.timeframe, "ratio": ratio, "average": average},
+        )
+
+
+===== DOSYA: data/__init__.py =====
+"""
+QDE V1 - data package
+
+Single source of truth for all Binance Futures market data. No
+indicator or engine module talks to the exchange or cache directly -
+everything consumes DataCollector.fetch() output (models.MarketData).
+"""
+
+from data.exchange import ExchangeClient
+from data.cache import MarketCache
+from data.collector import DataCollector
+
+__all__ = ["ExchangeClient", "MarketCache", "DataCollector"]
+
+
+===== DOSYA: data/cache.py =====
+"""
+QDE V1 - data/cache.py
+
+Market data cache (Document 02 SS9, Document 07 SS13).
+
+Architecture:
+    Binance -> Cache -> Indicators
+
+Ensures identical data (e.g. 15m candles for ETHUSDT) is downloaded
+once and reused by every indicator that needs it, and across cache
+levels with different TTLs (exchange info rarely changes, OHLCV
+changes every scan, indicator results are scan-scoped).
+
+Dependency level: 0 (no internal imports).
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class _CacheEntry:
+    value: Any
+    expires_at: float
+
+
+class MarketCache:
+    """In-memory TTL cache keyed by (symbol, data_type, timeframe).
+
+    TTLs are configured per data_type via `ttl_config`
+    (Document 09 SS8: config.json -> cache.ttl_seconds), e.g.:
+        {"exchange_info": 3600, "ohlcv": 60, "ticker": 30}
+
+    A data_type with no configured TTL defaults to `default_ttl`
+    seconds (one full scan's worth), so results are safely reused
+    within a single scan even if not explicitly configured.
+    """
+
+    def __init__(self, ttl_config: dict[str, int], default_ttl: int = 120) -> None:
+        self._ttl_config = ttl_config
+        self._default_ttl = default_ttl
+        self._store: dict[tuple[str, str, str | None], _CacheEntry] = {}
+
+    def _key(self, symbol: str, data_type: str, timeframe: str | None) -> tuple[str, str, str | None]:
+        return (symbol, data_type, timeframe)
+
+    def _ttl_for(self, data_type: str) -> int:
+        return self._ttl_config.get(data_type, self._default_ttl)
+
+    def get(self, symbol: str, data_type: str, timeframe: str | None = None) -> Any | None:
+        """Return the cached value, or None if missing/expired."""
+        key = self._key(symbol, data_type, timeframe)
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() >= entry.expires_at:
+            del self._store[key]
+            return None
+        return entry.value
+
+    def set(self, symbol: str, data_type: str, value: Any, timeframe: str | None = None) -> None:
+        key = self._key(symbol, data_type, timeframe)
+        ttl = self._ttl_for(data_type)
+        self._store[key] = _CacheEntry(value=value, expires_at=time.monotonic() + ttl)
+
+    def has(self, symbol: str, data_type: str, timeframe: str | None = None) -> bool:
+        return self.get(symbol, data_type, timeframe) is not None
+
+    def clear(self) -> None:
+        """Wipe the entire cache. Useful between independent scan runs
+        if stale data must not leak across scans.
+        """
+        self._store.clear()
+
+    def size(self) -> int:
+        return len(self._store)
+
+
+===== DOSYA: data/collector.py =====
+"""
+QDE V1 - data/collector.py
+
+Data Collector (Document 02, entire document; Document 06 SS7 unified
+market object). Orchestrates ExchangeClient + MarketCache to produce
+one MarketData object per symbol. No downstream module (indicators,
+engines) ever talks to the exchange or the cache directly.
+
+Design boundary (Document 02 SS18): the collector downloads, validates,
+and caches data, and assembles unified objects. It never calculates
+indicators, scores setups, or produces signals.
+
+Dependency level: 2 (depends on data.exchange, data.cache,
+models.market_data).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from typing import Any
+
+from data.exchange import ExchangeClient
+from data.cache import MarketCache
+from models.market_data import MarketData, OHLCVCandle, TimeframeData
+
+
+_TIMEFRAME_MS = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+}
+
+
+def _drop_unclosed_candle(candles: list[OHLCVCandle], timeframe: str) -> list[OHLCVCandle]:
+    """Binance/ccxt's fetch_ohlcv returns the currently-forming candle
+    as the last element when no `since`/end-time is given - its close
+    price is still moving, so any indicator reading closes()[-1] would
+    be reading a value that can repaint within the same period
+    (Document 10-style look-ahead risk). Drop it if its expected close
+    time hasn't passed yet.
+    """
+    if not candles:
+        return candles
+    duration_ms = _TIMEFRAME_MS.get(timeframe)
+    if duration_ms is None:
+        return candles  # unknown timeframe string - leave as-is rather than guess
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    last_candle_close_ms = candles[-1].timestamp + duration_ms
+    if last_candle_close_ms > now_ms:
+        return candles[:-1]
+    return candles
+
+
+class DataCollector:
+    """Downloads, caches, and assembles MarketData for one or many symbols.
+
+    Always requests more history than the strict minimum
+    (Document 02 SS8: "Always download more than required"), controlled
+    by `history_buffer_multiplier`.
+    """
+
+    def __init__(
+        self,
+        exchange: ExchangeClient,
+        cache: MarketCache,
+        timeframes: list[str],
+        required_candles: dict[str, int],
+        history_buffer_multiplier: float = 1.2,
+    ) -> None:
+        self.exchange = exchange
+        self.cache = cache
+        self.timeframes = timeframes
+        self.required_candles = required_candles
+        self.history_buffer_multiplier = history_buffer_multiplier
+
+    async def fetch(self, symbol: str) -> MarketData:
+        """Assemble one unified MarketData object for `symbol`
+        (Document 02 SS14 output shape).
+        """
+        timeframe_results = await asyncio.gather(
+            *[self._fetch_timeframe(symbol, tf) for tf in self.timeframes]
+        )
+        timeframes = dict(zip(self.timeframes, timeframe_results))
+
+        funding, open_interest, ticker, mark_price = await asyncio.gather(
+            self._fetch_funding(symbol),
+            self._fetch_open_interest(symbol),
+            self._fetch_ticker(symbol),
+            self._fetch_mark_price(symbol),
+        )
+
+        return MarketData(
+            symbol=symbol,
+            timeframes=timeframes,
+            funding=funding,
+            open_interest=open_interest,
+            ticker=ticker,
+            mark_price=mark_price,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    async def fetch_batch(self, symbols: list[str]) -> list[MarketData]:
+        """Fetch MarketData for many symbols concurrently. Per-symbol
+        failures are isolated and excluded from the result rather than
+        aborting the batch (Document 02 SS12).
+        """
+        results = await asyncio.gather(
+            *[self.fetch(s) for s in symbols], return_exceptions=True
+        )
+        market_data_list: list[MarketData] = []
+        for symbol, result in zip(symbols, results):
+            if isinstance(result, Exception):
+                continue  # caller (main.QDEPipeline) is responsible for logging
+            market_data_list.append(result)
+        return market_data_list
+
+    async def prefetch_bulk(self, symbols: list[str]) -> None:
+        """Warms the cache for ticker/funding/mark_price using bulk
+        endpoints (Document "Bulk API" revision) instead of the ~1,500
+        individual per-symbol REST calls a 500-symbol scan previously
+        required (Document 10 SS6.2). Must be called AFTER the
+        exchange's symbol universe has been loaded at least once
+        (ExchangeClient.get_active_symbols() does this via
+        load_markets()) - get_all_mark_prices() needs markets_by_id
+        populated to map Binance's raw symbol IDs back to ccxt's
+        unified symbol format.
+
+        Safe to call even if a bulk call partially fails or omits a
+        symbol: _fetch_ticker/_fetch_funding/_fetch_mark_price already
+        fall back to the individual per-symbol endpoint on a cache
+        miss, so missing bulk coverage degrades to the old behavior
+        for just that symbol rather than failing the scan.
+        """
+        try:
+            tickers, funding_rates, mark_prices = await asyncio.gather(
+                self.exchange.get_all_tickers(),
+                self.exchange.get_all_funding_rates(),
+                self.exchange.get_all_mark_prices(),
+            )
+        except Exception:
+            return  # per-symbol fallback in _fetch_* handles this scan just fine
+
+        symbol_set = set(symbols)
+        for symbol, value in tickers.items():
+            if symbol in symbol_set:
+                self.cache.set(symbol, "ticker", value)
+        for symbol, value in funding_rates.items():
+            if symbol in symbol_set:
+                self.cache.set(symbol, "funding", value)
+        for symbol, value in mark_prices.items():
+            if symbol in symbol_set:
+                self.cache.set(symbol, "mark_price", value)
+
+    # -- per-field fetchers (cache-first) --------------------------------
+
+    async def _fetch_timeframe(self, symbol: str, timeframe: str) -> TimeframeData:
+        cached = self.cache.get(symbol, "ohlcv", timeframe)
+        if cached is not None:
+            return cached
+
+        minimum = self.required_candles.get(timeframe, 100)
+        # +1 to compensate for _drop_unclosed_candle potentially removing
+        # the still-forming last candle (Document 10 look-ahead fix) -
+        # without this, dropping one candle could leave fewer than
+        # `minimum`, tripping Hard Filter Rule 3 for no real reason.
+        limit = int(minimum * self.history_buffer_multiplier) + 1
+        raw = await self.exchange.get_ohlcv(symbol, timeframe, limit)
+
+        candles = [
+            OHLCVCandle(
+                timestamp=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+            )
+            for row in raw
+        ]
+        candles = _drop_unclosed_candle(candles, timeframe)
+        tf_data = TimeframeData(timeframe=timeframe, candles=candles)
+        self.cache.set(symbol, "ohlcv", tf_data, timeframe)
+        return tf_data
+
+    async def _fetch_funding(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "funding")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_funding_rate(symbol)
+        self.cache.set(symbol, "funding", value)
+        return value
+
+    async def _fetch_open_interest(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "open_interest")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_open_interest(symbol)
+        self.cache.set(symbol, "open_interest", value)
+        return value
+
+    async def _fetch_ticker(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "ticker")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_ticker(symbol)
+        self.cache.set(symbol, "ticker", value)
+        return value
+
+    async def _fetch_mark_price(self, symbol: str) -> dict[str, Any]:
+        cached = self.cache.get(symbol, "mark_price")
+        if cached is not None:
+            return cached
+        value = await self.exchange.get_mark_price(symbol)
+        self.cache.set(symbol, "mark_price", value)
+        return value
+
+
+===== DOSYA: data/exchange.py =====
+"""
+QDE V1 - data/exchange.py
+
+Binance Futures (USDT-M Perpetual) client (Document 02 SS3-SS4, updated
+access-layer note in Document 02's closing remarks).
+
+Access layer policy:
+    - Primary: ccxt (ccxt.async_support.binanceusdm)
+    - Fallback: ccxt's implicit Binance REST API methods (e.g.
+      `fapiPublicGetPremiumIndex`) for endpoints ccxt's unified API
+      does not fully cover (mark price, some funding/OI history detail).
+    - Data source is always Binance Futures - never Spot, never a
+      third-party aggregator (Document 01 SS8).
+
+Every request goes through RateLimiter.acquire() and is wrapped with
+async_retry so a single transient failure never aborts a scan
+(Document 02 SS10, SS12).
+
+Dependency level: 1 (depends on utils.rate_limiter, utils.retry).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import ccxt.async_support as ccxt_async
+
+from utils.rate_limiter import RateLimiter
+from utils.retry import async_retry, retry_config_from_dict
+
+
+class ExchangeClient:
+    """Thin, rate-limited, retry-wrapped Binance USDT-M Futures client.
+
+    All indicator/collector code depends on this class, never on ccxt
+    directly (Document 02 SS3: "No indicator should directly
+    communicate with Binance").
+    """
+
+    def __init__(self, rate_limit_config: dict[str, Any]) -> None:
+        self._exchange = ccxt_async.binanceusdm(
+            {
+                "enableRateLimit": False,  # QDE's own RateLimiter governs pacing
+                "options": {"defaultType": "future"},
+            }
+        )
+        self._limiter = RateLimiter.from_config(rate_limit_config)
+        self._retry_kwargs = retry_config_from_dict(rate_limit_config)
+
+    async def _call(self, func, *args: Any, weight: float = 1.0, **kwargs: Any) -> Any:
+        """Rate-limit then retry-wrap a single ccxt call."""
+        await self._limiter.acquire(weight)
+
+        @async_retry(**self._retry_kwargs, base_delay=1.0)
+        async def _wrapped() -> Any:
+            return await func(*args, **kwargs)
+
+        return await _wrapped()
+
+    async def get_active_symbols(self) -> list[str]:
+        """Return active USDT-M perpetual symbols only (Document 02 SS5).
+
+        Rejects: quarterly/delivery futures, non-USDT quotes, inverse
+        contracts, inactive/delisted markets.
+        """
+        markets = await self._call(self._exchange.load_markets, weight=5.0, reload=True)
+        symbols: list[str] = []
+        for market in markets.values():
+            if not market.get("active", False):
+                continue
+            if market.get("quote") != "USDT":
+                continue
+            if not market.get("swap", False):
+                continue
+            if not market.get("linear", False):
+                continue
+            info = market.get("info", {})
+            if info.get("contractType") not in (None, "PERPETUAL"):
+                continue
+            symbols.append(market["symbol"])
+        return symbols
+
+    async def get_ohlcv(self, symbol: str, timeframe: str, limit: int, since: int | None = None) -> list[list[float]]:
+        """Returns ccxt's standard OHLCV format:
+        [[timestamp, open, high, low, close, volume], ...]
+
+        `since` (epoch milliseconds, optional): fetch candles starting
+        from this point in time instead of the most recent `limit`
+        candles. Added for outcome_engine.py's fixed-horizon historical
+        lookups (Document "Fixed Horizon Outcome" patch) - every
+        existing caller omits it and gets byte-identical behavior to
+        before this parameter existed.
+        """
+        return await self._call(
+            self._exchange.fetch_ohlcv, symbol, timeframe=timeframe, limit=limit, since=since
+        )
+
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        """24h ticker stats, with spread pre-computed for Hard Filter
+        Rule 7 (Document 02 SS15).
+        """
+        ticker = await self._call(self._exchange.fetch_ticker, symbol)
+        bid = ticker.get("bid")
+        ask = ticker.get("ask")
+        spread = None
+        if bid and ask and bid > 0:
+            mid = (bid + ask) / 2
+            spread = (ask - bid) / mid if mid else None
+        return {
+            "quoteVolume": ticker.get("quoteVolume"),
+            "percentage": ticker.get("percentage"),
+            "bid": bid,
+            "ask": ask,
+            "spread": spread,
+            "last": ticker.get("last"),
+        }
+
+    async def get_funding_rate(self, symbol: str) -> dict[str, Any]:
+        funding = await self._call(self._exchange.fetch_funding_rate, symbol)
+        return {
+            "rate": funding.get("fundingRate"),
+            "next_funding_time": funding.get("fundingTimestamp"),
+        }
+
+    async def get_open_interest(self, symbol: str) -> dict[str, Any]:
+        oi = await self._call(self._exchange.fetch_open_interest, symbol)
+        return {
+            "value": oi.get("openInterestAmount") or oi.get("openInterestValue"),
+            "timestamp": oi.get("timestamp"),
+        }
+
+    async def get_mark_price(self, symbol: str) -> dict[str, Any]:
+        """Uses ccxt's implicit Binance REST method as fallback, since
+        the unified `fetch_mark_price` is not consistently available
+        across ccxt versions for binanceusdm (Document 02 closing note:
+        "official fallback" policy).
+        """
+        market = self._exchange.market(symbol)
+        raw = await self._call(
+            self._exchange.fapiPublicGetPremiumIndex,
+            weight=1.0,
+            params={"symbol": market["id"]},
+        )
+        return {
+            "mark_price": float(raw.get("markPrice", 0.0)) if raw else None,
+            "index_price": float(raw.get("indexPrice", 0.0)) if raw else None,
+        }
+
+    # -- bulk endpoints (V1.1 - Document "Bulk API" revision) ------------
+    #
+    # Fetching ticker/funding/mark-price per symbol meant ~1,500
+    # individual REST calls for a 500-symbol scan (Document 10 SS6.2).
+    # Binance/ccxt expose bulk equivalents that return every symbol's
+    # data in ONE call; DataCollector.prefetch_bulk() calls these once
+    # per scan and warms the cache, so the existing per-symbol
+    # _fetch_ticker/_fetch_funding/_fetch_mark_price methods find a
+    # cache hit and never issue an individual request under normal
+    # operation. Falling back to the individual per-symbol methods
+    # above still works unchanged if a symbol is missing from a bulk
+    # response for any reason.
+
+    async def get_all_tickers(self) -> dict[str, dict[str, Any]]:
+        """Bulk equivalent of get_ticker() for every symbol in one
+        call. Returns {symbol: ticker_dict} using the same shape
+        get_ticker() returns for a single symbol.
+        """
+        raw = await self._call(self._exchange.fetch_tickers, weight=40.0)
+        result: dict[str, dict[str, Any]] = {}
+        for symbol, ticker in raw.items():
+            bid = ticker.get("bid")
+            ask = ticker.get("ask")
+            spread = None
+            if bid and ask and bid > 0:
+                mid = (bid + ask) / 2
+                spread = (ask - bid) / mid if mid else None
+            result[symbol] = {
+                "quoteVolume": ticker.get("quoteVolume"),
+                "percentage": ticker.get("percentage"),
+                "bid": bid,
+                "ask": ask,
+                "spread": spread,
+                "last": ticker.get("last"),
+            }
+        return result
+
+    async def get_all_funding_rates(self) -> dict[str, dict[str, Any]]:
+        """Bulk equivalent of get_funding_rate() for every symbol."""
+        raw = await self._call(self._exchange.fetch_funding_rates, weight=40.0)
+        return {
+            symbol: {
+                "rate": funding.get("fundingRate"),
+                "next_funding_time": funding.get("fundingTimestamp"),
+            }
+            for symbol, funding in raw.items()
+        }
+
+    async def get_all_mark_prices(self) -> dict[str, dict[str, Any]]:
+        """Bulk equivalent of get_mark_price(). Binance's premiumIndex
+        endpoint returns an array covering every symbol when called
+        without a `symbol` parameter (documented REST behavior).
+        """
+        raw = await self._call(self._exchange.fapiPublicGetPremiumIndex, weight=10.0)
+        result: dict[str, dict[str, Any]] = {}
+        for entry in raw:
+            market_id = entry.get("symbol")
+            if not market_id:
+                continue
+            try:
+                unified_symbol = self._exchange.markets_by_id[market_id][0]["symbol"]
+            except (KeyError, IndexError):
+                continue
+            result[unified_symbol] = {
+                "mark_price": float(entry.get("markPrice", 0.0)),
+                "index_price": float(entry.get("indexPrice", 0.0)),
+            }
+        return result
+
+    async def close(self) -> None:
+        """Release the underlying ccxt aiohttp session."""
+        await self._exchange.close()
+
+    async def __aenter__(self) -> "ExchangeClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+
+===== DOSYA: models/__init__.py =====
+"""
+QDE V1 - models package
+
+Pure data layer. Zero business logic, zero I/O. Every other package may
+depend on models/; models/ depends on nothing internal.
+"""
+
+from models.market_data import OHLCVCandle, TimeframeData, MarketData
+from models.feature import Feature, FeatureStatus, FeatureFamily
+from models.setup import Setup
+from models.result import Result, ExpectedMove, RISK_GRADES
+
+__all__ = [
+    "OHLCVCandle",
+    "TimeframeData",
+    "MarketData",
+    "Feature",
+    "FeatureStatus",
+    "FeatureFamily",
+    "Setup",
+    "Result",
+    "ExpectedMove",
+    "RISK_GRADES",
+]
+
+
+===== DOSYA: models/feature.py =====
+"""
+QDE V1 - models/feature.py
+
+Per-indicator output object (Document 03, Document 06 SS6 plugin contract).
+
+Every indicator plugin returns exactly one Feature. The Confidence
+Engine groups Features by `family` to compute feature agreement
+(Document 04 SS4).
+
+Dependency level: 0 (no internal imports). Pure data holder only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class FeatureStatus(str, Enum):
+    """Directional read of a feature, independent of its numeric score."""
+
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+
+
+class FeatureFamily(str, Enum):
+    """Feature families used by the Confidence Engine's agreement matrix
+    (Document 04 SS4). Agreement across families carries more weight than
+    agreement within a single family.
+    """
+
+    TREND = "trend"
+    MOMENTUM = "momentum"
+    PARTICIPATION = "participation"  # volume, open interest, funding
+    STRUCTURE = "structure"          # volatility / compression
+    MARKET = "market"                # BTC trend, regime, relative strength
+
+
+@dataclass(frozen=True)
+class Feature:
+    """Structured output of a single indicator calculation.
+
+    Example (Document 06 SS6):
+        Feature(
+            name="relative_strength",
+            value=84.0,
+            score=15.0,
+            status=FeatureStatus.POSITIVE,
+            family=FeatureFamily.MARKET,
+        )
+    """
+
+    name: str
+    value: float
+    score: float
+    status: FeatureStatus
+    family: FeatureFamily
+    metadata: dict = field(default_factory=dict)
+
+    def is_positive(self) -> bool:
+        return self.status is FeatureStatus.POSITIVE
+
+    def is_negative(self) -> bool:
+        return self.status is FeatureStatus.NEGATIVE
+
+    def is_available(self) -> bool:
+        """Missing/unavailable features should be represented explicitly
+        rather than omitted, so the Confidence Engine can reduce
+        confidence instead of crashing (Document 03 SS13).
+        """
+        return self.status is not None and self.value is not None
+
+
+===== DOSYA: models/market_data.py =====
+"""
+QDE V1 - models/market_data.py
+
+The unified market data object (Document 02 SS14, Document 06 SS7).
+
+This is the single object that flows from data.collector into every
+indicator and into engines.hard_filter. No indicator or engine ever
+requests data from the exchange directly - everything reads from this
+object.
+
+Dependency level: 0 (no internal imports). Pure data holders only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class OHLCVCandle:
+    """A single OHLCV candle."""
+
+    timestamp: int  # epoch milliseconds, UTC
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    def is_valid(self) -> bool:
+        """Basic sanity check used by Hard Filter Rule 9 (corrupted data)."""
+        values = (self.open, self.high, self.low, self.close, self.volume)
+        if any(v is None for v in values):
+            return False
+        if any(v != v for v in values):  # NaN check without importing math
+            return False
+        if self.high < self.low:
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class TimeframeData:
+    """OHLCV history for a single timeframe (e.g. '15m', '1h')."""
+
+    timeframe: str
+    candles: list[OHLCVCandle] = field(default_factory=list)
+
+    def closes(self) -> list[float]:
+        return [c.close for c in self.candles]
+
+    def highs(self) -> list[float]:
+        return [c.high for c in self.candles]
+
+    def lows(self) -> list[float]:
+        return [c.low for c in self.candles]
+
+    def volumes(self) -> list[float]:
+        return [c.volume for c in self.candles]
+
+    def is_sufficient(self, min_candles: int) -> bool:
+        """Used by Hard Filter Rule 3 (missing candle history)."""
+        return len(self.candles) >= min_candles and all(
+            c.is_valid() for c in self.candles
+        )
+
+
+@dataclass
+class MarketData:
+    """Unified per-symbol market snapshot (Document 02 SS14).
+
+    Assembled once per symbol per scan by data.collector.DataCollector
+    and shared read-only by every downstream consumer.
+    """
+
+    symbol: str
+    timeframes: dict[str, TimeframeData]
+    funding: dict[str, Any]
+    open_interest: dict[str, Any]
+    ticker: dict[str, Any]
+    mark_price: dict[str, Any]
+    timestamp: str  # UTC ISO8601
+
+    def has_timeframe(self, timeframe: str) -> bool:
+        return timeframe in self.timeframes and bool(
+            self.timeframes[timeframe].candles
+        )
+
+    def get_timeframe(self, timeframe: str) -> TimeframeData | None:
+        return self.timeframes.get(timeframe)
+
+    def get_closes(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.closes() if tf else []
+
+    def get_highs(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.highs() if tf else []
+
+    def get_lows(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.lows() if tf else []
+
+    def get_volumes(self, timeframe: str) -> list[float]:
+        tf = self.get_timeframe(timeframe)
+        return tf.volumes() if tf else []
+
+    def has_funding(self) -> bool:
+        """Used by Hard Filter Rule 5 (missing funding data)."""
+        return bool(self.funding)
+
+    def has_open_interest(self) -> bool:
+        """Used by Hard Filter Rule 4 (missing open interest)."""
+        return bool(self.open_interest)
+
+    def quote_volume(self) -> float | None:
+        """Used by Hard Filter Rule 6 (daily quote volume threshold)."""
+        return self.ticker.get("quoteVolume")
+
+    def spread(self) -> float | None:
+        """Used by Hard Filter Rule 7 (spread threshold).
+
+        Expected to be pre-computed by data.collector as
+        (ask - bid) / mid_price and stored in ticker['spread'].
+        """
+        return self.ticker.get("spread")
+
+    def is_minimally_valid(self, required_candles: dict[str, int]) -> bool:
+        """Aggregate validity check combining Hard Filter Rules 3-5, 9.
+
+        required_candles maps timeframe -> minimum candle count
+        (e.g. {'15m': 200, '1h': 250, '4h': 150, '1d': 100}).
+        """
+        if not self.has_funding() or not self.has_open_interest():
+            return False
+        for tf, minimum in required_candles.items():
+            timeframe_data = self.get_timeframe(tf)
+            if timeframe_data is None or not timeframe_data.is_sufficient(minimum):
+                return False
+        return True
+
+
+===== DOSYA: models/result.py =====
+"""
+QDE V1 - models/result.py
+
+The final output object (Document 04 SS17). Wraps a Setup with the
+Confidence Engine's evaluation: confidence, risk grade, uniqueness,
+expected move/duration, and detected contradictions.
+
+This is the object every output renderer (output.terminal,
+output.json_output, output.csv_output) and the Research Engine consume.
+
+Dependency level: 1 (depends only on models.setup).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from models.setup import Setup
+
+
+@dataclass
+class ExpectedMove:
+    """Probability estimates for reaching given expansion thresholds
+    (Document 04 SS8). Values are probabilities in [0, 1].
+    """
+
+    probabilities: dict[str, float] = field(default_factory=dict)
+    # e.g. {"10_percent": 0.84, "20_percent": 0.61, "30_percent": 0.33}
+
+    def to_dict(self) -> dict[str, float]:
+        return dict(self.probabilities)
+
+
+RISK_GRADES = ("A+", "A", "B", "C", "D")
+
+
+@dataclass
+class Result:
+    """Final ranked object for one symbol (Document 04 SS17).
+
+    Example:
+        {
+          "symbol": "ETHFIUSDT",
+          "score": 91,
+          "confidence": 94,
+          "risk_grade": "A",
+          "uniqueness": 96,
+          "expected_move": {"10_percent": 0.84, ...},
+          "expected_duration": "8-24h",
+          "market_regime": "Bull",
+          "contradictions": [],
+          "fingerprint": {...}
+        }
+    """
+
+    setup: Setup
+    confidence: float
+    risk_grade: str
+    uniqueness: float
+    expected_move: ExpectedMove
+    expected_duration: str
+    contradictions: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.risk_grade not in RISK_GRADES:
+            raise ValueError(
+                f"Invalid risk_grade '{self.risk_grade}', must be one of {RISK_GRADES}"
+            )
+
+    @property
+    def symbol(self) -> str:
+        return self.setup.symbol
+
+    @property
+    def score(self) -> float:
+        return self.setup.raw_score
+
+    @property
+    def fingerprint(self) -> dict[str, str]:
+        return self.setup.fingerprint
+
+    def has_contradictions(self) -> bool:
+        return len(self.contradictions) > 0
+
+    def is_institutional_grade(self) -> bool:
+        """Signal category helper for output.terminal (Document 07 SS4)."""
+        return self.risk_grade == "A+" and self.confidence >= 90
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialization helper used by storage.exporter and output.*."""
+        return {
+            "symbol": self.symbol,
+            "score": self.score,
+            "confidence": self.confidence,
+            "risk_grade": self.risk_grade,
+            "uniqueness": self.uniqueness,
+            "expected_move": self.expected_move.to_dict(),
+            "expected_duration": self.expected_duration,
+            "market_regime": self.setup.market_regime,
+            "contradictions": self.contradictions,
+            "fingerprint": self.fingerprint,
+            "feature_scores": self.setup.feature_scores,
+            "passed": self.setup.passed,
+            "setup_id": self.setup.setup_id,
+            "timestamp": self.setup.timestamp,
+        }
+
+
+===== DOSYA: models/setup.py =====
+"""
+QDE V1 - models/setup.py
+
+The Setup record (Document 03 SS15, Document 05 SS17).
+
+Produced by engines.scoring.ScoringEngine, then enriched into a Result
+by engines.confidence.ConfidenceEngine. Persisted as-is (via its
+fingerprint/feature_scores) by engines.research.ResearchEngine.
+
+Dependency level: 0 (no internal imports). Pure data holder only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+import uuid
+
+
+@dataclass
+class Setup:
+    """A single scored market setup for one symbol at one point in time.
+
+    Example (Document 03 SS15):
+        {
+          "symbol": "ETHFIUSDT",
+          "raw_score": 91,
+          "feature_scores": {"trend": 18, "momentum": 15, ...},
+          "penalties": [],
+          "passed": true
+        }
+    """
+
+    symbol: str
+    timestamp: str  # UTC ISO8601
+    market_regime: str
+    raw_score: float
+    feature_scores: dict[str, float] = field(default_factory=dict)
+    penalties: list[str] = field(default_factory=list)
+    fingerprint: dict[str, str] = field(default_factory=dict)
+    passed: bool = False
+    setup_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def total_penalty(self) -> float:
+        """Soft penalties reduce score without rejecting the setup
+        (Document 03 SS7). Penalty reasons are stored as strings;
+        their numeric impact is already folded into raw_score by the
+        Scoring Engine, so this is purely informational/explainability.
+        """
+        return float(len(self.penalties))
+
+    def top_contributing_features(self, n: int = 3) -> list[tuple[str, float]]:
+        """Used by the Explainable AI principle (Document 03 SS14) to
+        show which categories drove the score.
+        """
+        return sorted(
+            self.feature_scores.items(), key=lambda kv: kv[1], reverse=True
+        )[:n]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialization helper for storage.repository implementations."""
+        return {
+            "setup_id": self.setup_id,
+            "symbol": self.symbol,
+            "timestamp": self.timestamp,
+            "market_regime": self.market_regime,
+            "raw_score": self.raw_score,
+            "feature_scores": self.feature_scores,
+            "penalties": self.penalties,
+            "fingerprint": self.fingerprint,
+            "passed": self.passed,
+        }
+
+
+===== DOSYA: output/csv_output.py =====
+"""
+QDE V1 - output/csv_output.py
+
+CSV Output renderer (Document 07 SS7). One row per setup, for Excel /
+manual research. Read-only consumer of list[Result]
+(Document 07 SS19).
+
+Dependency level: 2 (depends on models.result, storage.exporter).
+"""
+
+from __future__ import annotations
+
+import csv
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+from storage.exporter import CSV_COLUMNS, to_csv_rows
+
+_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+
+
+def render(results: list[Result], scan_summary: dict[str, Any]) -> str:
+    """Write the CSV scan export to reports/ and return its path."""
+    _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    run_id = scan_summary.get("run_id", "scan")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filepath = _REPORTS_DIR / f"qde_scan_{timestamp}_{run_id}.csv"
+
+    rows = to_csv_rows(results)
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+    return str(filepath)
+
+
+===== DOSYA: output/json_output.py =====
+"""
+QDE V1 - output/json_output.py
+
+JSON Output renderer (Document 07 SS6). One JSON file per scan, for
+dashboard integration, future API, external applications, and
+historical analysis. Read-only consumer of list[Result]
+(Document 07 SS19).
+
+Dependency level: 2 (depends on models.result, storage.exporter).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+from storage.exporter import to_json_dict
+
+_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+
+
+def render(results: list[Result], scan_summary: dict[str, Any]) -> str:
+    """Write the full JSON scan report to reports/ and return its path."""
+    _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    run_id = scan_summary.get("run_id", "scan")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filepath = _REPORTS_DIR / f"qde_scan_{timestamp}_{run_id}.json"
+
+    payload = to_json_dict(results, scan_summary)
+    filepath.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+    return str(filepath)
+
+
+===== DOSYA: output/live_status.py =====
+"""
+QDE V1 - output/live_status.py
+
+Live scan-state writer for the streaming dashboard (dashboard.html).
+Purely presentational and additive: reads only what main.QDEPipeline
+already produces per symbol (name, pass/fail, Result fields) and writes
+a small JSON snapshot to disk. Does not touch indicators, engines, or
+the setups database (Document 07 SS19 - Output Engine only presents).
+
+The dashboard (a static HTML/JS file, opened in a browser and served
+locally) polls this file every ~800ms instead of connecting to Python
+directly - this keeps the dashboard fully decoupled from the engine
+process, matching the same "read-only consumer" boundary every other
+output/ module already respects.
+
+Dependency level: 1 (depends on models.result).
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from models.result import Result
+
+_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+_STATUS_FILE = _REPORTS_DIR / "live_status.json"
+
+_TICKER_HISTORY = 40
+_SIGNAL_FEED_SIZE = 15
+_SCORE_HISTORY = 60
+
+
+class LiveStatusWriter:
+    """Accumulates rolling scan state and atomically writes it to
+    reports/live_status.json after every symbol.
+
+    Atomic write (write-to-temp-then-rename) so the dashboard never
+    reads a half-written file mid-poll.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.completed = 0
+        self.passed = 0
+        self.rejected = 0
+        self.current_symbol = ""
+        self.ticker: deque[dict[str, Any]] = deque(maxlen=_TICKER_HISTORY)
+        self.signal_feed: deque[dict[str, Any]] = deque(maxlen=_SIGNAL_FEED_SIZE)
+        self.score_history: deque[float] = deque(maxlen=_SCORE_HISTORY)
+        self._confidence_sum = 0.0
+        self._score_sum = 0.0
+        _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def update(self, symbol: str, result: Result | None) -> None:
+        self.completed += 1
+        self.current_symbol = symbol
+        passed = result is not None and result.setup.passed
+
+        if passed:
+            self.passed += 1
+            self._confidence_sum += result.confidence
+            self._score_sum += result.score
+            self.score_history.append(result.score)
+            self.signal_feed.appendleft(
+                {
+                    "symbol": result.symbol,
+                    "confidence": result.confidence,
+                    "score": result.score,
+                    "risk_grade": result.risk_grade,
+                    "uniqueness": result.uniqueness,
+                }
+            )
+        else:
+            self.rejected += 1
+            if result is not None:
+                self.score_history.append(result.score)
+
+        self.ticker.append({"symbol": symbol, "passed": passed})
+        self._write(scan_complete=False)
+
+    def finish(self) -> None:
+        self._write(scan_complete=True)
+
+    def _write(self, scan_complete: bool) -> None:
+        avg_confidence = round(self._confidence_sum / self.passed, 1) if self.passed else 0.0
+        avg_score = round(self._score_sum / self.passed, 1) if self.passed else 0.0
+
+        payload = {
+            "current_symbol": self.current_symbol,
+            "completed": self.completed,
+            "total": self.total,
+            "passed": self.passed,
+            "rejected": self.rejected,
+            "avg_confidence": avg_confidence,
+            "avg_score": avg_score,
+            "ticker": list(self.ticker),
+            "signal_feed": list(self.signal_feed),
+            "score_history": list(self.score_history),
+            "scan_complete": scan_complete,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Atomic write: temp file in the same directory, then replace.
+        fd, tmp_path = tempfile.mkstemp(dir=_REPORTS_DIR, suffix=".tmp")
+        try:
+            with open(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            Path(tmp_path).replace(_STATUS_FILE)
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
+

@@ -1,0 +1,230 @@
+
+./main.py
+  L380: debug print? -> print(f"\n{symbol}\nRejected:")
+  L382: debug print? -> print(f"- {label}")
+  L592: debug print? -> print()
+  L593: debug print? -> print(report)
+  L606: debug print? -> print()
+  L607: debug print? -> print(report)
+  L619: debug print? -> print()
+  L620: debug print? -> print(f"AI Audit package generated: {zip_path}")
+  L732: debug print? -> print("\nQDE durduruldu (Ctrl+C). Kaynaklar temizlendi.")
+  L544: uzun fonksiyon 'main_async' (115 satır)
+  L152: uzun fonksiyon '__init__' (73 satır)
+  L227: uzun fonksiyon 'run' (80 satır)
+  L361: uzun fonksiyon '_process_one' (83 satır)
+  L446: uzun fonksiyon '_rank' (91 satır)
+
+./performance_tracker.py
+  L238: debug print? -> print(f"Guncel fiyatlar cekiliyor: {total} sembol...")
+  L247: debug print? -> print(f"  {i}/{total} sembol tamamlandi...")
+  L251: debug print? -> print(f"Fiyat cekme tamamlandi: {total}/{total}")
+  L406: debug print? -> print("Kullanım: python performance_tracker.py <sayı> <gün|hafta|ay>")
+  L407: debug print? -> print("Örnek   : python performance_tracker.py 1 hafta")
+  L412: debug print? -> print(f"Hata: {exc}")
+  L414: debug print? -> print(report)
+  L100: uzun fonksiyon 'record_top15' (69 satır)
+  L270: uzun fonksiyon 'build_report' (119 satır)
+
+./learning_engine.py
+  L518: debug print? -> print("Geri alinacak bir yedek bulunamadi.")
+  L529: debug print? -> print("Agirliklar onceki yedege geri alindi.")
+  L532: debug print? -> print(analyze_and_optimize(apply=args.apply))
+
+./tie_break_optimizer.py
+  L362: debug print? -> print("Agirliklar onceki yedege geri alindi." if rollback() else "Geri alinacak 
+  L365: debug print? -> print(asyncio.run(run_optimization(apply=args.apply)))
+
+./audit_engine.py
+  L757: debug print? -> print("AI Audit paketi olusturuluyor...")
+  L758: debug print? -> print("  qde.db okunuyor...")
+  L760: debug print? -> print(f"  {len(all_setups)} setup bulundu.")
+  L762: debug print? -> print(f"  Top15 gecmisi okunuyor, gercek outcome'lar ({_REPORTING_HORIZON}) qde.
+  L764: debug print? -> print(f"  {len(top15_history)} Top15 kaydi islendi.")
+  L766: debug print? -> print("  audit.db okunuyor...")
+  L768: debug print? -> print(f"  {len(indicator_rows)} gosterge kaydi, {len(filter_rows)} filtre karari
+  L775: debug print? -> print("  Rapor dosyalari hazirlaniyor...")
+  L871: debug print? -> print(f"AI Audit package generated: {path}")
+  L178: uzun fonksiyon 'capture_snapshot' (65 satır)
+  L178: çok parametreli 'capture_snapshot' (9)
+  L442: uzun fonksiyon '_pull_top15_history' (75 satır)
+  L748: uzun fonksiyon 'generate_package' (118 satır)
+
+./entry_engine.py
+  L1461: debug print? -> print(asyncio.run(run(explain=args.explain)))
+  L905: uzun fonksiyon 'score_entry_quality' (69 satır)
+  L996: uzun fonksiyon 'build_trade_plan' (62 satır)
+  L1084: uzun fonksiyon 'evaluate_top15' (78 satır)
+
+./outcome_engine.py
+  L291: debug print? -> print(asyncio.run(run(max_targets=args.max, horizon_filter=horizon_filter)))
+  L100: uzun fonksiyon 'compute_outcome' (64 satır)
+  L175: uzun fonksiyon 'process_pending_outcomes' (73 satır)
+
+./yama_qde.py
+  L21: debug print? -> print("\n[OK] qde/entry_engine.py basariyla guncellendi!\n")
+  L23: debug print? -> print("\n[-] entry_engine.py bulunamadi!\n")
+
+./auto_bot.py
+  L55: debug print? -> print(f"[-] Cooldown yazılamadı: {e}")
+  L146: çıplak/boş except -> pass
+  L154: debug print? -> print(f"[+] Mesaj gönderildi! ({hedef})")
+  L156: debug print? -> print(f"[-] Telegram mesaj hatası: {e}")
+  L165: çıplak/boş except -> pass
+  L172: debug print? -> print(f"[+] Sütun Grafiği İletildi! 📸")
+  L174: debug print? -> print(f"[-] Grafik hatası: {e}")
+  L202: debug print? -> print(f"  [Scalp 5m] Aktif Long: {l_count}/1 | Aktif Short: {s_count}/1 | Rejim:
+  L231: debug print? -> print("=" * 54)
+  L232: debug print? -> print("QDE SİMETRİK BOT: TOP 15 LONG & TOP 15 SHORT AKTİF")
+  L233: debug print? -> print(f"Grup: {TELEGRAM_CHAT_ID} | Scalp Konusu: #{SCALP_TOPIC_ID}")
+  L234: debug print? -> print("=" * 54)
+  L240: debug print? -> print(f"\n[{simdi}] 1. Aşama: 500+ Coin Taranıyor...")
+  L251: debug print? -> print("[+] Tarama tamamlandı.")
+  L253: debug print? -> print(f"[-] Tarama hatası: {e}")
+  L254: async içinde blocking sleep -> time.sleep(30)
+  L258: debug print? -> print(f"[*] Piyasa Rejimi: {btc_regime}")
+  L260: debug print? -> print(f"[{simdi}] 2. Aşama: Swing & Kasa Yönetimi...")
+  L282: debug print? -> print(f"[ENGEL] #{coin_temiz} 24s %{change_24h:.1f} yükselmiş. Tepeden alım enge
+  L294: debug print? -> print(f"[-] Swing hatası: {e}")
+  L297: debug print? -> print(f"[{simdi}] 3. Aşama: 5m Simetrik Scalp Takibi Başlatılıyor...")
+  L303: debug print? -> print(f"[-] Scalp döngü hatası: {e_sc}")
+  L306: async içinde blocking sleep -> time.sleep(300)
+  L312: çıplak/boş except -> pass
+  L230: uzun fonksiyon 'main' (82 satır)
+
+./paper_engine.py
+  L151: debug print? -> print(f"\n[💎] SMART KASA İŞLEME GİRDİ: #{clean_sym} | Slot: {v_open_count+1}/{MA
+  L154: debug print? -> print(f"[i] #{clean_sym} Smart Kasa slotları dolu ({v_open_count}/{MAX_VAULT_POS
+  L187: debug print? -> print(f"[🛡️] MALİYETTE KAPANDI: #{sym} (Kâr korundu, zarar sıfır).")
+  L194: debug print? -> print(f"[-] STOP OLDU: #{sym} | Kayıp: ${loss_usd:.2f}")
+  L209: debug print? -> print(f"[🎯] TP1 ALINDI: #{sym} %50 Kâr Kasada (+${half_gain:.2f}), Stop Giriş Fi
+  L219: debug print? -> print(f"[🚀] TP2 ALINDI (TAM KÂR): #{sym} Toplam Kâr: +${total_gain:.2f}")
+  L18: uzun fonksiyon 'get_conn' (67 satır)
+  L90: uzun fonksiyon 'process_new_signal' (68 satır)
+  L160: uzun fonksiyon 'update_table_positions' (64 satır)
+  L234: uzun fonksiyon 'generate_two_layer_report' (68 satır)
+
+./scalp_engine.py
+  L140: debug print? -> print(f"[-] Short listesi hatası: {e}")
+  L303: debug print? -> print(f"\n[⚡] SCALP İŞLEME GİRDİ: #{plan['symbol']} ({direction}) | Marjin: ${ma
+  L332: uzun fonksiyon 'check_all_scalp_exits' (85 satır)
+
+./bagla.py
+  L4: debug print? -> print("=" * 50)
+  L5: debug print? -> print("QDE SCALP KONU YAKALAYICI")
+  L6: debug print? -> print("=" * 50)
+  L18: debug print? -> print(f"[+] Hafızadan BULDUM! Qde Scalp Konu ID: {tid}")
+  L21: debug print? -> print(f"Hata: {e}")
+  L25: debug print? -> print("\n[*] Şimdi Telegram'a geç.")
+  L26: debug print? -> print("[*] 'Qde Scalp' konusuna gir ve /scalp yazıp gönder!")
+  L27: debug print? -> print("[*] Bekleniyor...\n")
+  L37: debug print? -> print(f"\n[+] CANLI YAKALANDI! Qde Scalp Konu ID: {tid}\n")
+  L42: çıplak/boş except -> pass
+  L52: debug print? -> print(f"[+] auto_bot.py güncellendi (Scalp Konusu: #{found_tid})")
+  L65: debug print? -> print("[+] 1. Görseldeki gibi haftalık sütun grafiği verileri yüklendi!")
+  L67: debug print? -> print("\n[🚀] BOT BAŞLATILIYOR...\n")
+  L70: debug print? -> print("[-] Konu ID yakalanamadı. Lütfen Qde Scalp konusuna girip /scalp yazın ve
+
+./scan_issues.py
+  L14: debug print? -> print(f"{p}: OKUNAMADI ({e})"); continue
+  L21: if "TODO" in s or "FIXME" in s or "XXX" in s:
+  L25: async içinde blocking sleep -> if "time.sleep(" in s and "async" in src:
+  L45: debug print? -> print(f"\n{p}")
+  L46: debug print? -> print("\n".join(issues))
+  L48: debug print? -> print(f"\n\n=== TOPLAM: {issues_total} uyarı ===")
+
+./output/terminal.py
+  L83: debug print? -> print()
+  L84: debug print? -> print(_color("✓ SIGNAL FOUND", _BOLD + _GREEN))
+  L85: debug print? -> print()
+  L86: debug print? -> print(_color(result.symbol, _BOLD))
+  L87: debug print? -> print(f"Category ........... {_category(result)}")
+  L88: debug print? -> print(f"Confidence .......... {_color(f'{result.confidence:.0f}', _GREEN)}")
+  L89: debug print? -> print(f"Score ............... {_color(f'{result.score:.0f}', _GREEN)}")
+  L90: debug print? -> print(f"Grade ............... {_color(result.risk_grade, _GREEN)}")
+  L93: debug print? -> print(f"Momentum ............ {_color(momentum_str, _GREEN)}")
+  L96: debug print? -> print(f"Relative Strength ... {_color(rs_str, _GREEN)}")
+  L99: debug print? -> print(f"Volume Score ........ {_color(volume_str, _GREEN)}")
+  L100: debug print? -> print(f"Uniqueness .......... {result.uniqueness:.0f}")
+  L101: debug print? -> print(f"Expected Window ..... {result.expected_duration}")
+  L103: debug print? -> print(f"Warnings ............ {_color(', '.join(result.contradictions), _ORANGE)
+  L110: debug print? -> print("-" * 54)
+  L117: debug print? -> print("Top Signals: none")
+  L120: debug print? -> print("Top Signals")
+  L121: debug print? -> print()
+  L123: debug print? -> print(f"{i})")
+  L124: debug print? -> print(result.symbol)
+  L125: debug print? -> print(f"Confidence {result.confidence:.0f}")
+  L126: debug print? -> print(f"Score      {result.score:.0f}")
+  L129: debug print? -> print(f"TieBreak   {tb.total:+.1f}")
+  L130: debug print? -> print()
+  L150: debug print? -> print()
+  L151: debug print? -> print(_SEPARATOR)
+  L152: debug print? -> print("QDE Scan Report")
+  L153: debug print? -> print(_SEPARATOR)
+  L154: debug print? -> print()
+  L155: debug print? -> print(f"Coins Scanned      : {scan_summary.get('symbols_scanned', 0)}")
+  L156: debug print? -> print(f"Qualified          : {scan_summary.get('symbols_passed', 0)}")
+  L157: debug print? -> print(f"Rejected           : {scan_summary.get('symbols_scanned', 0) - scan_summ
+  L158: debug print? -> print(f"Institutional Grade: {len(institutional)}")
+  L159: debug print? -> print(f"Average Score      : {scan_summary.get('avg_score', 0.0)}")
+  L160: debug print? -> print(f"Average Confidence : {scan_summary.get('avg_confidence', 0.0)}")
+  L161: debug print? -> print(f"Scan Duration      : {scan_summary.get('scan_duration_seconds', 0)} sec"
+  L162: debug print? -> print()
+  L163: debug print? -> print("-" * 54)
+  L164: debug print? -> print()
+  L168: debug print? -> print(_SEPARATOR)
+
+./output/progress.py
+  L125: debug print? -> print("-" * 54)
+  L126: debug print? -> print("QDE Quant Engine")
+  L127: debug print? -> print()
+  L128: debug print? -> print("Market: Binance Futures")
+  L129: debug print? -> print(f"Scanning {total_symbols} symbols...")
+  L130: debug print? -> print()
+
+./storage/repository.py
+  L98: çok parametreli 'insert_outcome' (12)
+  L189: çok parametreli 'record_regime_snapshot' (7)
+
+./storage/sqlite_repository.py
+  L319: çok parametreli 'record_regime_snapshot' (7)
+  L379: çok parametreli 'insert_outcome' (12)
+
+./tests/test_indicators.py
+  L96: çıplak/boş except -> pass
+
+./plugins/liquidity_scanner/connectivity_test.py
+  L82: debug print? -> print("HATA: ccxt kurulu degil. Once calistirin: pip install ccxt")
+  L87: debug print? -> print("=" * 56)
+  L88: debug print? -> print("BINANCE FUTURES - LIQUIDITY SCANNER CONNECTIVITY TEST")
+  L89: debug print? -> print("=" * 56)
+  L90: debug print? -> print()
+  L93: debug print? -> print(f"[1/2] Tekil istek testi ({len(symbols)} sembol, depth limit={DEPTH_LIMIT
+  L94: debug print? -> print("-" * 56)
+  L100: debug print? -> print(
+  L106: debug print? -> print(
+  L112: debug print? -> print()
+  L115: debug print? -> print(
+  L121: debug print? -> print("  Hicbir istek basarili olmadi - baglanti sorunu var.")
+  L124: debug print? -> print()
+  L125: debug print? -> print(f"[2/2] Hizli ardisik istek testi ({BURST_REQUEST_COUNT}x, ayni sembol, ra
+  L126: debug print? -> print("-" * 56)
+  L133: debug print? -> print(f"  [{i+1:2d}/{BURST_REQUEST_COUNT}] {status:20s} {result['elapsed_ms']:7.
+  L140: debug print? -> print()
+  L141: debug print? -> print(f"  Basarili: {burst_ok}/{BURST_REQUEST_COUNT}")
+  L142: debug print? -> print(f"  Rate-limit hatasi gorulen istek sayisi: {len(rate_limit_errors)}")
+  L146: debug print? -> print()
+  L147: debug print? -> print("=" * 56)
+  L148: debug print? -> print("SONUC")
+  L149: debug print? -> print("=" * 56)
+  L151: debug print? -> print("Baglanti saglikli. Depth endpoint stabil yanit veriyor,")
+  L152: debug print? -> print(f"{BURST_REQUEST_COUNT} ardisik istekte rate-limit sorunu gorulmedi.")
+  L153: debug print? -> print("Scanner implementasyonuna gecilebilir.")
+  L155: debug print? -> print("Baglanti kismen calisiyor ama burst testte sorun var -")
+  L156: debug print? -> print("scanner'da istekler arasi gecikme/throttling gerekebilir.")
+  L158: debug print? -> print("Baglanti basarisiz. Once ag/DNS/ccxt kurulumunu kontrol edin.")
+  L78: uzun fonksiyon 'run_connectivity_test' (80 satır)
+
+
+=== TOPLAM: 189 uyarı ===

@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""
+QDE Simetrik Çift Yönlü Mikro Scalp Motoru
+- Top 15 Long (En Güçlüler) -> 5m Direnç Kırılımı
+- Top 15 Short (En Zayıflar) -> 5m Destek Kırılımı
+"""
+
+import sys
+import sqlite3
+import asyncio
+import time
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+_DB_PATH = Path("scalp_portfolio.db")
+TIMEOUT_SECONDS = 2100          # 35 Dakika
+SCALP_COOLDOWN_SECONDS = 2700   # 45 Dakika
+MAX_24H_PUMP_LIMIT = 22.0      # Long için %22 tavan
+MAX_24H_DUMP_LIMIT = 22.0      # Short için %22 taban
+INITIAL_SUB_BALANCE = 100.0
+SCALP_ALLOCATION_PCT = 0.20
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS scalp_wallets (
+        direction TEXT PRIMARY KEY,
+        initial_balance REAL NOT NULL DEFAULT 100.0,
+        current_balance REAL NOT NULL DEFAULT 100.0,
+        total_trades INTEGER DEFAULT 0,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        updated_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS scalp_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'LONG',
+        entry_price REAL NOT NULL,
+        stop_loss REAL NOT NULL,
+        tp1 REAL NOT NULL,
+        tp2 REAL NOT NULL,
+        leverage REAL NOT NULL DEFAULT 5.0,
+        allocated_margin REAL NOT NULL DEFAULT 20.0,
+        status TEXT NOT NULL DEFAULT 'OPEN',
+        current_price REAL,
+        pnl_usd REAL DEFAULT 0.0,
+        pnl_pct REAL DEFAULT 0.0,
+        reason TEXT DEFAULT '',
+        opened_at_ts REAL NOT NULL,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS scalp_cooldown (
+        symbol TEXT PRIMARY KEY,
+        last_trade_time REAL NOT NULL
+    );
+    """)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if not conn.execute("SELECT direction FROM scalp_wallets WHERE direction = 'LONG'").fetchone():
+        conn.execute("INSERT INTO scalp_wallets (direction, initial_balance, current_balance, updated_at) VALUES ('LONG', ?, ?, ?)", (INITIAL_SUB_BALANCE, INITIAL_SUB_BALANCE, now_iso))
+    if not conn.execute("SELECT direction FROM scalp_wallets WHERE direction = 'SHORT'").fetchone():
+        conn.execute("INSERT INTO scalp_wallets (direction, initial_balance, current_balance, updated_at) VALUES ('SHORT', ?, ?, ?)", (INITIAL_SUB_BALANCE, INITIAL_SUB_BALANCE, now_iso))
+    conn.commit()
+    return conn
+
+def aktif_scalp_sayisi(direction: str = None) -> int:
+    conn = get_conn()
+    if direction:
+        count = conn.execute("SELECT COUNT(*) FROM scalp_positions WHERE status = 'OPEN' AND direction = ?", (direction.upper(),)).fetchone()[0]
+    else:
+        count = conn.execute("SELECT COUNT(*) FROM scalp_positions WHERE status = 'OPEN'").fetchone()[0]
+    conn.close()
+    return count
+
+def scalp_cooldown_var_mi(symbol: str) -> bool:
+    conn = get_conn()
+    row = conn.execute("SELECT last_trade_time FROM scalp_cooldown WHERE symbol = ?", (symbol,)).fetchone()
+    conn.close()
+    if row:
+        if (time.time() - row["last_trade_time"]) < SCALP_COOLDOWN_SECONDS:
+            return True
+    return False
+
+def scalp_cooldown_kaydet(symbol: str):
+    conn = get_conn()
+    conn.execute("INSERT OR REPLACE INTO scalp_cooldown VALUES (?, ?)", (symbol, time.time()))
+    conn.commit()
+    conn.close()
+
+def _ema(values: list[float], period: int) -> float:
+    k = 2 / (period + 1)
+    ema = values[0]
+    for v in values[1:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+def _rsi(closes: list[float], period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gains.append(max(diff, 0.0))
+        losses.append(max(-diff, 0.0))
+    avg_g = sum(gains[-period:]) / period
+    avg_l = sum(losses[-period:]) / period
+    if avg_l == 0:
+        return 100.0
+    rs = avg_g / avg_l
+    return 100.0 - (100.0 / (1.0 + rs))
+
+def get_top_short_candidates(limit: int = 15) -> list[str]:
+    """Son taramada puanı EN DÜŞÜK olan (Piyasanın en zayıf 15 paritesi)"""
+    try:
+        conn = sqlite3.connect("qde.db")
+        max_time_row = conn.execute("SELECT MAX(timestamp) FROM setups").fetchone()
+        if not max_time_row or not max_time_row[0]:
+            conn.close()
+            return []
+        
+        # Son taramanın yapıldığı zaman aralığı (son 30 dakika)
+        max_ts = max_time_row[0]
+        rows = conn.execute("""
+            SELECT symbol FROM setups
+            WHERE passed = 1
+            GROUP BY symbol
+            ORDER BY MAX(timestamp) DESC, raw_score ASC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception as e:
+        print(f"[-] Short listesi hatası: {e}")
+        return []
+
+async def scan_market_for_scalp(exchange, top_long_symbols: list[str], btc_regime: str, tickers: dict) -> dict | None:
+    has_long_slot = (aktif_scalp_sayisi("LONG") < 1)
+    has_short_slot = (aktif_scalp_sayisi("SHORT") < 1)
+
+    if not has_long_slot and not has_short_slot:
+        return None
+
+    is_bearish = ("bear" in btc_regime.lower())
+    yon_sirasi = ["SHORT", "LONG"] if is_bearish else ["LONG", "SHORT"]
+
+    for yon in yon_sirasi:
+        if yon == "LONG" and has_long_slot:
+            res = await _scan_long(exchange, top_long_symbols[:15], btc_regime, tickers)
+            if res:
+                return res
+
+        elif yon == "SHORT" and has_short_slot:
+            # GERÇEK TOP 15 SHORT LİSTESİNDEN TARA
+            top_short_symbols = get_top_short_candidates(limit=15)
+            res = await _scan_short(exchange, top_short_symbols, btc_regime, tickers)
+            if res:
+                return res
+
+    return None
+
+async def _scan_long(exchange, symbols: list[str], btc_regime: str, tickers: dict) -> dict | None:
+    for sym in symbols:
+        clean = sym.replace(":USDT", "").replace("/USDT", "").strip()
+        if scalp_cooldown_var_mi(clean):
+            continue
+
+        t_data = tickers.get(f"{clean}/USDT:USDT") or tickers.get(f"{clean}USDT") or {}
+        pct_24h = float(t_data.get("percentage") or 0.0)
+        if pct_24h >= MAX_24H_PUMP_LIMIT:
+            continue
+
+        try:
+            raw = await exchange.get_ohlcv(sym, "5m", 30)
+            if not raw or len(raw) < 22:
+                continue
+
+            closes = [c[4] for c in raw]
+            highs = [c[2] for c in raw]
+            lows = [c[3] for c in raw]
+            vols = [c[5] for c in raw]
+
+            current_p = closes[-1]
+            prior_high = max(highs[-15:-1])
+            avg_vol = sum(vols[-15:-1]) / 14
+            current_vol = vols[-1]
+
+            ema20 = _ema(closes, 20)
+            rsi = _rsi(closes, 14)
+
+            # Long Kırılımı
+            if current_p > prior_high and current_vol >= avg_vol * 1.15:
+                if current_p < ema20 or rsi > 72.0:
+                    continue
+
+                recent_low = min(lows[-4:-1])
+                diff_pct = ((current_p - recent_low) / current_p) * 100
+                sl_p = recent_low if (0.5 <= diff_pct <= 2.0) else (current_p * 0.988)
+
+                risk = current_p - sl_p
+                tp1_p = current_p + (risk * 1.2)
+                tp2_p = current_p + (risk * 2.0)
+
+                neden = "Piyasa Gücü (Pozitif Alfa) & 5m Direnç Kırılımı" if "bull" in btc_regime.lower() else "Piyasadan Bağımsız Güçlü Hacim & 5m Kırılım"
+
+                return {
+                    "symbol": clean,
+                    "direction": "LONG",
+                    "entry": current_p,
+                    "stop": sl_p,
+                    "tp1": tp1_p,
+                    "tp2": tp2_p,
+                    "stop_pct": ((current_p - sl_p) / current_p) * 100,
+                    "reason": neden
+                }
+        except Exception:
+            continue
+    return None
+
+async def _scan_short(exchange, symbols: list[str], btc_regime: str, tickers: dict) -> dict | None:
+    for sym in symbols:
+        clean = sym.replace(":USDT", "").replace("/USDT", "").strip()
+        if scalp_cooldown_var_mi(clean):
+            continue
+
+        t_data = tickers.get(f"{clean}/USDT:USDT") or tickers.get(f"{clean}USDT") or {}
+        pct_24h = float(t_data.get("percentage") or 0.0)
+        if pct_24h <= -MAX_24H_DUMP_LIMIT:
+            continue
+
+        try:
+            raw = await exchange.get_ohlcv(sym, "5m", 30)
+            if not raw or len(raw) < 22:
+                continue
+
+            closes = [c[4] for c in raw]
+            highs = [c[2] for c in raw]
+            lows = [c[3] for c in raw]
+            vols = [c[5] for c in raw]
+
+            current_p = closes[-1]
+            prior_low = min(lows[-15:-1])
+            avg_vol = sum(vols[-15:-1]) / 14
+            current_vol = vols[-1]
+
+            ema20 = _ema(closes, 20)
+            rsi = _rsi(closes, 14)
+
+            # Short Kırılımı (Simetrik Ters Kural)
+            if current_p < prior_low and current_vol >= avg_vol * 1.15:
+                if current_p > ema20 or rsi < 28.0 or rsi > 65.0:
+                    continue
+
+                recent_high = max(highs[-4:-1])
+                diff_pct = ((recent_high - current_p) / current_p) * 100
+                sl_p = recent_high if (0.5 <= diff_pct <= 2.0) else (current_p * 1.012)
+
+                risk = sl_p - current_p
+                tp1_p = current_p - (risk * 1.2)
+                tp2_p = current_p - (risk * 2.0)
+
+                neden = "Piyasa Zayıflığı (BTC Negatif) & 5m Destek Kırılımı" if "bear" in btc_regime.lower() else "Piyasadan Bağımsız Zayıflık (Bireysel Satış & 5m Kırılım)"
+
+                return {
+                    "symbol": clean,
+                    "direction": "SHORT",
+                    "entry": current_p,
+                    "stop": sl_p,
+                    "tp1": tp1_p,
+                    "tp2": tp2_p,
+                    "stop_pct": ((sl_p - current_p) / current_p) * 100,
+                    "reason": neden
+                }
+        except Exception:
+            continue
+    return None
+
+def open_scalp(plan: dict):
+    conn = get_conn()
+    now_ts = time.time()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    direction = plan["direction"].upper()
+
+    w_row = conn.execute("SELECT current_balance FROM scalp_wallets WHERE direction = ?", (direction,)).fetchone()
+    cur_bal = w_row["current_balance"] if w_row else INITIAL_SUB_BALANCE
+    margin = max(10.0, round(cur_bal * SCALP_ALLOCATION_PCT, 2))
+
+    conn.execute("""
+        INSERT INTO scalp_positions (
+            symbol, direction, entry_price, stop_loss, tp1, tp2,
+            leverage, allocated_margin, status, current_price, reason, opened_at_ts, opened_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)
+    """, (plan["symbol"], direction, plan["entry"], plan["stop"], plan["tp1"], plan["tp2"], 5.0, margin, plan["entry"], plan["reason"], now_ts, now_iso))
+    conn.commit()
+    conn.close()
+    scalp_cooldown_kaydet(plan["symbol"])
+    print(f"\n[⚡] SCALP İŞLEME GİRDİ: #{plan['symbol']} ({direction}) | Marjin: ${margin:.2f}\n")
+
+def format_scalp_report_msg(title: str, sym: str, yon: str, pnl_pct: float, pnl_usd: float) -> str:
+    conn = get_conn()
+    w_long = conn.execute("SELECT * FROM scalp_wallets WHERE direction = 'LONG'").fetchone()
+    w_short = conn.execute("SELECT * FROM scalp_wallets WHERE direction = 'SHORT'").fetchone()
+    
+    # Genel istatistikler
+    total_trades = conn.execute("SELECT COUNT(*) FROM scalp_positions WHERE status != 'OPEN'").fetchone()[0]
+    total_sl = conn.execute("SELECT COUNT(*) FROM scalp_positions WHERE status IN ('CLOSED_SL', 'CLOSED_TIMEOUT')").fetchone()[0] # Timeout'u da stop sayalim
+    total_tp1 = conn.execute("SELECT COUNT(*) FROM scalp_positions WHERE status = 'CLOSED_TP1'").fetchone()[0]
+    total_tp2 = conn.execute("SELECT COUNT(*) FROM scalp_positions WHERE status = 'CLOSED_TP2'").fetchone()[0]
+    conn.close()
+
+    l_bal = w_long["current_balance"] if w_long else 1000.0
+    s_bal = w_short["current_balance"] if w_short else 1000.0
+    l_ret = ((l_bal - 1000.0) / 1000.0) * 100
+    s_ret = ((s_bal - 1000.0) / 1000.0) * 100
+    tot_bal = l_bal + s_bal
+    tot_ret = ((tot_bal - 2000.0) / 2000.0) * 100
+
+    pnl_sign = "+" if pnl_usd >= 0 else ""
+    durum_emoji = "🟢" if pnl_usd >= 0 else "🔴"
+
+    return f"""{title} <b>#{sym}</b> ({yon})
+───────────────────────
+💵 <b>İşlem Sonucu:</b> {pnl_sign}%{pnl_pct:.2f} {durum_emoji} <i>({pnl_sign}{pnl_usd:.2f} USD)</i>
+
+📊 <b>GENEL İSTATİSTİK:</b>
+Toplam İşlem: {total_trades} | Stop: {total_sl} | TP1: {total_tp1} | TP2: {total_tp2}
+
+💼 <b>GÜNCEL SCALP KASA DURUMU:</b>
+🟢 <b>Long Kasa  :</b> <code>{l_bal:.2f} USD</code> <i>({'+' if l_ret>=0 else ''}%{l_ret:.2f})</i>
+🔴 <b>Short Kasa :</b> <code>{s_bal:.2f} USD</code> <i>({'+' if s_ret>=0 else ''}%{s_ret:.2f})</i>
+💰 <b>Toplam Kasa:</b> <b>{tot_bal:.2f} USD</b> <i>({'+' if tot_ret>=0 else ''}%{tot_ret:.2f})</i>
+───────────────────────
+<i>QDE Mikro Scalp Kasa Defteri</i>"""
+
+def check_all_scalp_exits(tickers: dict) -> list[str]:
+    conn = get_conn()
+    positions = conn.execute("SELECT * FROM scalp_positions WHERE status = 'OPEN'").fetchall()
+    if not positions:
+        conn.close()
+        return []
+
+    notifications = []
+    now_ts = time.time()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for pos in positions:
+        sym = pos["symbol"]
+        yon = pos["direction"]
+        margin = pos["allocated_margin"] or 20.0
+        
+        last_p = None
+        for key in [f"{sym}/USDT:USDT", f"{sym}/USDT", f"{sym}USDT", sym]:
+            if key in tickers and tickers[key].get("last"):
+                last_p = float(tickers[key]["last"])
+                break
+
+        entry_p = pos["entry_price"]
+        sl_p = pos["stop_loss"]
+        tp1_p = pos["tp1"]
+        tp2_p = pos["tp2"]
+        opened_ts = pos["opened_at_ts"] or 0
+        elapsed_sec = (now_ts - opened_ts) if opened_ts > 0 else 9999
+
+        if last_p is None and elapsed_sec >= TIMEOUT_SECONDS:
+            conn.execute("UPDATE scalp_positions SET status = 'CLOSED_TIMEOUT', closed_at = ? WHERE id = ?", (now_iso, pos["id"]))
+            conn.execute("UPDATE scalp_wallets SET total_trades = total_trades + 1, updated_at = ? WHERE direction = ?", (now_iso, yon))
+            conn.commit()
+            notifications.append(format_scalp_report_msg("⏱ <b>ZAMAN AŞIMI:</b>", sym, yon, 0.0, 0.0))
+            continue
+
+        if not last_p:
+            continue
+
+        if yon == "LONG":
+            is_tp2 = (last_p >= tp2_p)
+            is_tp1 = (last_p >= tp1_p)
+            is_sl  = (last_p <= sl_p)
+            pnl_pct = ((last_p - entry_p) / entry_p) * 5.0 * 100
+        else:
+            is_tp2 = (last_p <= tp2_p)
+            is_tp1 = (last_p <= tp1_p)
+            is_sl  = (last_p >= sl_p)
+            pnl_pct = ((entry_p - last_p) / entry_p) * 5.0 * 100
+
+        pnl_usd = margin * (pnl_pct / 100)
+
+        if is_tp2:
+            conn.execute("UPDATE scalp_positions SET status = 'CLOSED_TP2', current_price = ?, pnl_pct = ?, pnl_usd = ?, closed_at = ? WHERE id = ?",
+                         (last_p, pnl_pct, pnl_usd, now_iso, pos["id"]))
+            conn.execute("UPDATE scalp_wallets SET current_balance = current_balance + ?, total_trades = total_trades + 1, wins = wins + 1, updated_at = ? WHERE direction = ?",
+                         (pnl_usd, now_iso, yon))
+            conn.commit()
+            notifications.append(format_scalp_report_msg("🎯🎯 <b>SCALP TP2 VURULDU!</b>", sym, yon, pnl_pct, pnl_usd))
+        elif is_tp1:
+            conn.execute("UPDATE scalp_positions SET status = 'CLOSED_TP1', current_price = ?, pnl_pct = ?, pnl_usd = ?, closed_at = ? WHERE id = ?",
+                         (last_p, pnl_pct, pnl_usd, now_iso, pos["id"]))
+            conn.execute("UPDATE scalp_wallets SET current_balance = current_balance + ?, total_trades = total_trades + 1, wins = wins + 1, updated_at = ? WHERE direction = ?",
+                         (pnl_usd, now_iso, yon))
+            conn.commit()
+            notifications.append(format_scalp_report_msg("🎯 <b>SCALP TP1 ALINDI!</b>", sym, yon, pnl_pct, pnl_usd))
+        elif is_sl:
+            conn.execute("UPDATE scalp_positions SET status = 'CLOSED_SL', current_price = ?, pnl_pct = ?, pnl_usd = ?, closed_at = ? WHERE id = ?",
+                         (last_p, pnl_pct, pnl_usd, now_iso, pos["id"]))
+            conn.execute("UPDATE scalp_wallets SET current_balance = current_balance + ?, total_trades = total_trades + 1, losses = losses + 1, updated_at = ? WHERE direction = ?",
+                         (pnl_usd, now_iso, yon))
+            conn.commit()
+            notifications.append(format_scalp_report_msg("🛑 <b>MİKRO STOP OLDU!</b>", sym, yon, pnl_pct, pnl_usd))
+        elif elapsed_sec >= TIMEOUT_SECONDS:
+            conn.execute("UPDATE scalp_positions SET status = 'CLOSED_TIMEOUT', current_price = ?, pnl_pct = ?, pnl_usd = ?, closed_at = ? WHERE id = ?",
+                         (last_p, pnl_pct, pnl_usd, now_iso, pos["id"]))
+            conn.execute("UPDATE scalp_wallets SET current_balance = current_balance + ?, total_trades = total_trades + 1, updated_at = ? WHERE direction = ?",
+                         (pnl_usd, now_iso, yon))
+            conn.commit()
+            notifications.append(format_scalp_report_msg("⏱ <b>ZAMAN AŞIMI:</b>", sym, yon, pnl_pct, pnl_usd))
+        else:
+            conn.execute("UPDATE scalp_positions SET current_price = ? WHERE id = ?", (last_p, pos["id"]))
+
+    conn.commit()
+    conn.close()
+    return notifications

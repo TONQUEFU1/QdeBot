@@ -1,0 +1,33 @@
+[
+  {
+    "tarih": "2026-11-20T20:11:22.941607+00:00",
+    "action": "apply",
+    "değişiklikler": [
+      {
+        "gösterge": "trend",
+        "eski_değer": 1.0,
+        "yeni_değer": 1.1,
+        "sebep": "trend: (50, 100, 300) pencerelerinde tutarli yon (3/3 pencere), primer pencere (100 tarama) etkisi istatistiksel olarak anlamli (high_avg=-0.738%, low_avg=-6.248%, n_high=995, n_low=505) -> agirlik arttirildi"
+      },
+      {
+        "gösterge": "momentum",
+        "eski_değer": 1.0,
+        "yeni_değer": 0.9,
+        "sebep": "momentum: (50, 100, 300) pencerelerinde tutarli yon (2/3 pencere), primer pencere (100 tarama) etkisi istatistiksel olarak anlamli (high_avg=-2.74%, low_avg=0.872%, n_high=1439, n_low=61) -> agirlik azaltildi"
+      },
+      {
+        "gösterge": "volatility",
+        "eski_değer": 0.8,
+        "yeni_değer": 0.72,
+        "sebep": "volatility: (50, 100, 300) pencerelerinde tutarli yon (3/3 pencere), primer pencere (100 tarama) etkisi istatistiksel olarak anlamli (high_avg=-4.42%, low_avg=-0.857%, n_high=731, n_low=769) -> agirlik azaltildi"
+      },
+      {
+        "gösterge": "volume",
+        "eski_değer": 1.0,
+        "yeni_değer": 0.9,
+        "sebep": "volume: (50, 100, 300) pencerelerinde tutarli yon (3/3 pencere), primer pencere (100 tarama) etkisi istatistiksel olarak anlamli (high_avg=-3.226%, low_avg=-0.774%, n_high=1113, n_low=387) -> agirlik azaltildi"
+      }
+    ],
+    "win_rate_at_change": 32.0
+  }
+]

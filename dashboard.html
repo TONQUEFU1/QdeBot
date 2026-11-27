@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QDE — Quant Decision Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy-deep: #0B0F1A;
+    --navy-panel: #121826;
+    --navy-line: #1F2937;
+    --gold: #F5A623;
+    --teal: #22D3C7;
+    --rose: #E85D75;
+    --text-primary: #E7ECF3;
+    --text-dim: #6B7688;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--navy-deep);
+    background-image:
+      radial-gradient(ellipse at top left, rgba(245, 166, 35, 0.06), transparent 45%),
+      radial-gradient(ellipse at bottom right, rgba(34, 211, 199, 0.06), transparent 45%);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+  }
+
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .display { font-family: 'Space Grotesk', sans-serif; }
+
+  /* ---------- Ticker tape ---------- */
+  .ticker-wrap {
+    height: 44px;
+    background: var(--navy-panel);
+    border-bottom: 1px solid var(--navy-line);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+  .ticker-wrap::before {
+    content: "LIVE SCAN";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    background: var(--navy-deep);
+    color: var(--gold);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    z-index: 2;
+    border-right: 1px solid var(--navy-line);
+  }
+  .ticker-track {
+    display: flex;
+    gap: 28px;
+    padding-left: 130px;
+    white-space: nowrap;
+    animation: scroll-left 22s linear infinite;
+  }
+  @keyframes scroll-left {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  .tick-item {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tick-item.pass { color: var(--teal); }
+  .tick-item.fail { color: var(--rose); opacity: 0.55; }
+
+  /* ---------- Main grid ---------- */
+  .main {
+    height: calc(100vh - 44px - 46px);
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 1px;
+    background: var(--navy-line);
+  }
+  .panel {
+    background: var(--navy-deep);
+    padding: 28px 32px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eyebrow .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--teal);
+    box-shadow: 0 0 8px var(--teal);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.75); }
+  }
+
+  .current-symbol {
+    font-size: clamp(48px, 7vw, 92px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 14px 0 4px;
+    background: linear-gradient(90deg, var(--text-primary), var(--gold));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    transition: opacity 0.15s ease;
+  }
+  .current-symbol.flash { animation: flash-in 0.35s ease; }
+  @keyframes flash-in {
+    0% { opacity: 0.2; transform: translateY(6px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+
+  .sub-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  /* ---------- Score equalizer (signature element) ---------- */
+  .equalizer {
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    margin: 28px 0;
+    min-height: 140px;
+    border-bottom: 1px solid var(--navy-line);
+    padding-bottom: 4px;
+  }
+  .eq-bar {
+    flex: 1;
+    min-width: 4px;
+    border-radius: 2px 2px 0 0;
+    background: linear-gradient(180deg, var(--teal), rgba(34,211,199,0.15));
+    transition: height 0.4s cubic-bezier(.4,0,.2,1);
+  }
+  .eq-bar.low {
+    background: linear-gradient(180deg, var(--rose), rgba(232,93,117,0.15));
+  }
+
+  /* ---------- Progress ring + stats ---------- */
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+  }
+  .ring-wrap { position: relative; width: 108px; height: 108px; flex-shrink: 0; }
+  .ring-wrap svg { transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: var(--navy-line); stroke-width: 8; }
+  .ring-fg { fill: none; stroke: var(--gold); stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset 0.4s ease; }
+  .ring-pct {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 20px; font-weight: 700;
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    gap: 0 32px;
+  }
+  .stat-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 26px;
+    font-weight: 700;
+  }
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .stat-value.passed { color: var(--teal); }
+  .stat-value.rejected { color: var(--rose); }
+  .stat-value.gold { color: var(--gold); }
+
+  /* ---------- Signal feed ---------- */
+  .feed-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 18px;
+  }
+  .feed-title {
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .feed-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .feed-list::-webkit-scrollbar { width: 0; }
+
+  .signal-card {
+    background: var(--navy-panel);
+    border: 1px solid var(--navy-line);
+    border-left: 3px solid var(--teal);
+    border-radius: 6px;
+    padding: 14px 16px;
+    animation: slide-in 0.4s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes slide-in {
+    from { opacity: 0; transform: translateX(18px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  .signal-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .signal-symbol {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .signal-grade {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(245, 166, 35, 0.15);
+    color: var(--gold);
+  }
+  .signal-metrics {
+    display: flex;
+    gap: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .signal-metrics b { color: var(--teal); font-weight: 700; }
+
+  .feed-empty {
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    padding-top: 12px;
+  }
+
+  /* ---------- Footer status bar ---------- */
+  .footer {
+    height: 46px;
+    background: var(--navy-panel);
+    border-top: 1px solid var(--navy-line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 32px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .footer b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+
+  <div class="ticker-wrap">
+    <div class="ticker-track" id="tickerTrack"></div>
+  </div>
+
+  <div class="main">
+    <div class="panel">
+      <div class="eyebrow"><span class="dot"></span> QDE QUANT DECISION ENGINE · BINANCE FUTURES</div>
+      <div class="current-symbol mono" id="currentSymbol">— — — —</div>
+      <div class="sub-label" id="subLabel">bağlanılıyor...</div>
+
+      <div class="equalizer" id="equalizer"></div>
+
+      <div class="progress-row">
+        <div class="ring-wrap">
+          <svg width="108" height="108">
+            <circle class="ring-bg" cx="54" cy="54" r="46"></circle>
+            <circle class="ring-fg" id="ringFg" cx="54" cy="54" r="46" stroke-dasharray="289" stroke-dashoffset="289"></circle>
+          </svg>
+          <div class="ring-pct" id="ringPct">0%</div>
+        </div>
+        <div class="stat-grid">
+          <div>
+            <div class="stat-value" id="statScanned">0</div>
+            <div class="stat-label">Scanned</div>
+          </div>
+          <div>
+            <div class="stat-value passed" id="statPassed">0</div>
+            <div class="stat-label">Passed</div>
+          </div>
+          <div>
+            <div class="stat-value rejected" id="statRejected">0</div>
+            <div class="stat-label">Rejected</div>
+          </div>
+          <div>
+            <div class="stat-value gold" id="statAvgConf">0</div>
+            <div class="stat-label">Avg Confidence</div>
+          </div>
+          <div>
+            <div class="stat-value gold" id="statAvgScore">0</div>
+            <div class="stat-label">Avg Score</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="feed-header">
+        <div class="feed-title display">Signal Feed</div>
+        <div class="sub-label">canlı</div>
+      </div>
+      <div class="feed-list" id="feedList">
+        <div class="feed-empty">Henüz sinyal yok — tarama devam ediyor...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div>QDE V1 <span style="color: var(--text-dim);">/ Quant Decision Engine</span></div>
+    <div id="lastUpdated">—</div>
+  </div>
+
+<script>
+  const STATUS_URL = 'reports/live_status.json';
+  const POLL_MS = 800;
+  let lastSymbol = null;
+  let lastSignalCount = 0;
+
+  function fmt(n) {
+    return (n === undefined || n === null) ? '0' : n;
+  }
+
+  function renderTicker(ticker) {
+    const track = document.getElementById('tickerTrack');
+    const items = ticker.map(t => {
+      const cls = t.passed ? 'pass' : 'fail';
+      const icon = t.passed ? '✓' : '✗';
+      return `<span class="tick-item ${cls}">${icon} ${t.symbol}</span>`;
+    }).join('');
+    // duplicate the list so the CSS scroll loop is seamless
+    track.innerHTML = items + items;
+  }
+
+  function renderEqualizer(scores) {
+    const el = document.getElementById('equalizer');
+    el.innerHTML = scores.map(s => {
+      const pct = Math.max(4, Math.min(100, s));
+      const cls = s < 50 ? 'low' : '';
+      return `<div class="eq-bar ${cls}" style="height: ${pct}%"></div>`;
+    }).join('');
+  }
+
+  function renderFeed(feed) {
+    const el = document.getElementById('feedList');
+    if (!feed.length) {
+      el.innerHTML = '<div class="feed-empty">Henüz sinyal yok — tarama devam ediyor...</div>';
+      return;
+    }
+    el.innerHTML = feed.map(f => `
+      <div class="signal-card">
+        <div class="signal-top">
+          <span class="signal-symbol">${f.symbol}</span>
+          <span class="signal-grade">${f.risk_grade}</span>
+        </div>
+        <div class="signal-metrics">
+          <span>CONF <b>${f.confidence.toFixed(0)}</b></span>
+          <span>SCORE <b>${f.score.toFixed(0)}</b></span>
+          <span>UNIQ <b>${f.uniqueness.toFixed(0)}</b></span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch(STATUS_URL + '?t=' + Date.now());
+      if (!res.ok) throw new Error('status file not ready');
+      const data = await res.json();
+
+      const symbolEl = document.getElementById('currentSymbol');
+      if (data.current_symbol !== lastSymbol) {
+        symbolEl.textContent = data.current_symbol || '— — — —';
+        symbolEl.classList.remove('flash');
+        void symbolEl.offsetWidth; // restart animation
+        symbolEl.classList.add('flash');
+        lastSymbol = data.current_symbol;
+      }
+
+      document.getElementById('subLabel').textContent =
+        data.scan_complete ? 'tarama tamamlandı' : 'taranıyor...';
+
+      const pct = data.total ? Math.round((data.completed / data.total) * 100) : 0;
+      document.getElementById('ringPct').textContent = pct + '%';
+      const circumference = 289;
+      document.getElementById('ringFg').style.strokeDashoffset =
+        circumference - (circumference * pct / 100);
+
+      document.getElementById('statScanned').textContent = fmt(data.completed) + ' / ' + fmt(data.total);
+      document.getElementById('statPassed').textContent = fmt(data.passed);
+      document.getElementById('statRejected').textContent = fmt(data.rejected);
+      document.getElementById('statAvgConf').textContent = fmt(data.avg_confidence);
+      document.getElementById('statAvgScore').textContent = fmt(data.avg_score);
+
+      renderTicker(data.ticker || []);
+      renderEqualizer(data.score_history || []);
+
+      if ((data.signal_feed || []).length !== lastSignalCount) {
+        renderFeed(data.signal_feed || []);
+        lastSignalCount = (data.signal_feed || []).length;
+      }
+
+      document.getElementById('lastUpdated').textContent =
+        'son güncelleme: ' + new Date(data.updated_at).toLocaleTimeString('tr-TR');
+
+    } catch (e) {
+      document.getElementById('subLabel').textContent = 'bekleniyor... (tarama başlatılmadı mı?)';
+    }
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>
